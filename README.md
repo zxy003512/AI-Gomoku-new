@@ -24,7 +24,7 @@
 1.  **获取代码:**
     克隆仓库或下载代码压缩包并解压。
     ```bash
-    git clone <https://github.com/zxy003512/AI-Gomoku-new> # 或者直接下载解压
+    git clone https://github.com/zxy003512/AI-Gomoku-new # 或者直接下载解压
     ```
 
 2.  **创建虚拟环境 (推荐):**
