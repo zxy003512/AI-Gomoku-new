@@ -2,284 +2,178 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
-<title>增强版AI五子棋 (Python Backend)</title>
+<title>自定义难度 & 线程数 AI 五子棋</title>
 <style>
-body { font-family: sans-serif; text-align: center; }
-canvas { border:1px solid #333; margin-top:10px; cursor:pointer; display: block; margin-left: auto; margin-right: auto;}
-#status { margin-top:10px; font-size: 1.2em; min-height: 1.5em; }
-button { margin: 5px; padding: 8px 15px; font-size: 1em;}
-.difficulty-selector { margin: 15px 0; }
-.difficulty-selector label { margin: 0 10px; }
-.thinking-indicator {
-    display: none; /* Hidden by default */
-    margin-left: 10px;
-    font-style: italic;
-    color: #555;
-}
-.thinking #status .thinking-indicator {
-    display: inline; /* Show when thinking */
-}
+  body{font-family:sans-serif;text-align:center;}
+  canvas{border:1px solid #333; cursor:pointer;}
+  #status{margin-top:10px;font-size:1.2em;}
+  .controls{margin:10px;}
+  .controls label{margin:0 10px;}
+  .thinking-indicator{display:none;font-style:italic;color:#555;}
+  #status.thinking .thinking-indicator{display:inline;}
 </style>
 </head>
 <body>
-<h1>增强版AI五子棋 (Python Backend)</h1>
+<h1>AI 五子棋 —— 自定义难度 & 线程数</h1>
 
-<div class="difficulty-selector">
-  <span>选择难度:</span>
-  <label><input type="radio" name="difficulty" value="2" onclick="setDifficulty(2)"> 简单</label>
-  <label><input type="radio" name="difficulty" value="3" checked onclick="setDifficulty(3)"> 普通 (默认)</label>
-  <label><input type="radio" name="difficulty" value="4" onclick="setDifficulty(4)"> 困难</label>
-  <label><input type="radio" name="difficulty" value="5" onclick="setDifficulty(5)"> 极难 (可能较慢)</label>
-  </div>
+<div class="controls">
+  <label>搜索深度: <input type="range" id="depthRange" min="1" max="12" value="3"
+        oninput="setDepth(this.value)" /> <span id="depthVal">3</span></label>
+  <label>线程数:   <input type="range" id="threadRange" min="1" max="100" value="4"
+        oninput="setThreads(this.value)" /> <span id="threadVal">4</span></label>
+</div>
 
 <canvas id="board" width="600" height="600"></canvas>
 <div id="status">您的回合<span class="thinking-indicator"> (AI 思考中...)</span></div>
-<button onclick="resetGame()">重新开始</button>
-<button onclick="aiFirst()">AI先手</button>
+<div class="controls">
+  <button onclick="resetGame()">重新开始</button>
+  <button onclick="aiFirst()">AI 先手</button>
+</div>
 
 <script>
-const canvas = document.getElementById('board');
-const ctx = canvas.getContext('2d');
-const size = 15; // 棋盘大小
-const cell = canvas.width / size; // 每格大小
-let board = Array.from({length:size}, ()=>Array(size).fill(0)); // 0:空, 1:玩家(黑), 2:AI(红)
-let gameOver = false;
-let playerTurn = true; // true: 玩家回合, false: AI回合
-let currentDepth = 3; // Default search depth, matches "普通" radio button value
+const canvas = document.getElementById('board'),
+      ctx    = canvas.getContext('2d'),
+      N      = 15,
+      cell   = canvas.width/N;
+let board = Array.from({length:N},()=>Array(N).fill(0)),
+    gameOver = false,
+    playerTurn = true,
+    currentDepth = 3,
+    currentThreads = 4;
 
-// --- 修改开始：设置后端URL为本地地址 ---
-const AI_BACKEND_URL = 'http://127.0.0.1:5000/ai_move'; // 本地开发URL
-// const AI_BACKEND_URL = '/ai_move'; // Vercel部署使用的相对路径 (注释掉)
-// --- 修改结束 ---
+const API = 'http://127.0.0.1:5000/ai_move';
 
-// --- 绘制相关 (Keep as is) ---
-function drawBoard() {
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  ctx.fillStyle = "#f0d9b5";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.strokeStyle="#333";
-  ctx.lineWidth = 1;
-  for(let i=0;i<size;i++){
-    ctx.beginPath(); ctx.moveTo(cell/2, cell/2 + i*cell); ctx.lineTo(canvas.width - cell/2, cell/2 + i*cell); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(cell/2 + i*cell, cell/2); ctx.lineTo(cell/2 + i*cell, canvas.height - cell/2); ctx.stroke();
+function drawBoard(){
+  ctx.clearRect(0,0,600,600);
+  ctx.fillStyle='#f0d9b5';
+  ctx.fillRect(0,0,600,600);
+  ctx.strokeStyle='#333'; ctx.lineWidth=1;
+  for(let i=0;i<N;i++){
+    ctx.beginPath();
+    ctx.moveTo(cell/2,cell/2+i*cell);
+    ctx.lineTo(600-cell/2,cell/2+i*cell);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cell/2+i*cell,cell/2);
+    ctx.lineTo(cell/2+i*cell,600-cell/2);
+    ctx.stroke();
   }
-    const starPoints = [ [3, 3], [11, 3], [3, 11], [11, 11], [7, 7] ];
-    ctx.fillStyle = "#333";
-    starPoints.forEach(([x, y]) => { ctx.beginPath(); ctx.arc(cell / 2 + x * cell, cell / 2 + y * cell, cell * 0.1, 0, Math.PI * 2); ctx.fill(); });
-
-  for(let y=0;y<size;y++){
-    for(let x=0;x<size;x++){
-      if(board[y][x]!==0){
-        let color = board[y][x] === 1 ? "black" : "#D80000";
-        ctx.beginPath(); ctx.arc(cell/2 + x*cell, cell/2 + y*cell, cell*0.4, 0, Math.PI*2); ctx.fillStyle=color;
-        // Simple shadow for depth
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
-        ctx.shadowBlur = 3;
-        ctx.shadowOffsetX = 1;
-        ctx.shadowOffsetY = 1;
+  // 星位
+  [[3,3],[11,3],[3,11],[11,11],[7,7]].forEach(p=>{
+    ctx.beginPath();
+    ctx.arc(cell/2+p[0]*cell,cell/2+p[1]*cell,cell*0.1,0,2*Math.PI);
+    ctx.fill();
+  });
+  // 棋子
+  for(let y=0;y<N;y++){
+    for(let x=0;x<N;x++){
+      if(board[y][x]){
+        ctx.beginPath();
+        ctx.arc(cell/2+x*cell,cell/2+y*cell,cell*0.4,0,2*Math.PI);
+        ctx.fillStyle = board[y][x]===1 ? 'black':'#D80000';
+        ctx.shadowColor='rgba(0,0,0,0.4)';
+        ctx.shadowBlur=3; ctx.shadowOffsetX=1; ctx.shadowOffsetY=1;
         ctx.fill();
-        ctx.shadowColor = 'transparent'; // Reset shadow
+        ctx.shadowColor='transparent';
       }
     }
   }
 }
 
-// --- 游戏逻辑 (Keep checkWin, isFull) ---
-function checkWin(x,y,player){
-  if(x<0 || y<0 || x>=size || y>=size || board[y][x] !== player) return false;
-  const dirs = [[1,0],[0,1],[1,1],[1,-1]];
-  for(const [dx,dy] of dirs){
-    let count=1;
-    for(let i=1;i<5;i++){ let nx=x+i*dx, ny=y+i*dy; if(nx<0||ny<0||nx>=size||ny>=size || board[ny][nx] !== player) break; count++; }
-    for(let i=1;i<5;i++){ let nx=x-i*dx, ny=y-i*dy; if(nx<0||ny<0||nx>=size||ny>=size || board[ny][nx] !== player) break; count++; }
-    if(count>=5) return true;
+function checkWin(x,y,p){
+  if(x<0||y<0||x>=N||y>=N||board[y][x]!==p) return false;
+  const dirs=[[1,0],[0,1],[1,1],[1,-1]];
+  for(let [dx,dy] of dirs){
+    let cnt=1;
+    for(let i=1;i<5;i++){
+      let nx=x+i*dx, ny=y+i*dy;
+      if(nx<0||ny<0||nx>=N||ny>=N||board[ny][nx]!==p) break;
+      cnt++;
+    }
+    for(let i=1;i<5;i++){
+      let nx=x-i*dx, ny=y-i*dy;
+      if(nx<0||ny<0||nx>=N||ny>=N||board[ny][nx]!==p) break;
+      cnt++;
+    }
+    if(cnt>=5) return true;
   }
   return false;
 }
 
-function isFull(){
-  return board.every(row=>row.every(cell=>cell!==0));
-}
+function isFull(){ return board.every(r=>r.every(c=>c!==0)); }
 
-// --- Event Listener (Modified for AI call) ---
-canvas.addEventListener('click',function(e){
-  if(gameOver || !playerTurn) return;
-
-  const rect=canvas.getBoundingClientRect();
-  let x=Math.floor((e.clientX - rect.left)/cell);
-  let y=Math.floor((e.clientY - rect.top)/cell);
-
-  if(x<0||y<0||x>=size||y>=size||board[y][x]!==0) return;
-
-  board[y][x]=1;
-  drawBoard();
-
-  if(checkWin(x,y,1)){
-    setStatus("恭喜你赢了！🎉");
-    gameOver=true;
-    return;
-  }
-  if(isFull()){
-    setStatus("平局！🤝");
-    gameOver=true;
-    return;
-  }
-
-  playerTurn = false;
-  // Update status immediately BEFORE calling AI
-  setStatus("AI思考中...🤔", true); // Add thinking class
-  // Call the backend AI - Use setTimeout to allow UI update before potential blocking fetch
-  setTimeout(requestAiMove, 50); // Small delay for UI render
+canvas.addEventListener('click',e=>{
+  if(gameOver||!playerTurn) return;
+  let rect=canvas.getBoundingClientRect(),
+      x=Math.floor((e.clientX-rect.left)/cell),
+      y=Math.floor((e.clientY-rect.top)/cell);
+  if(x<0||y<0||x>=N||y>=N||board[y][x]!==0) return;
+  board[y][x]=1; drawBoard();
+  if(checkWin(x,y,1)){ setStatus('你赢了！🎉'); gameOver=true; return; }
+  if(isFull()){ setStatus('平局！🤝'); gameOver=true; return; }
+  playerTurn=false;
+  setStatus('AI 思考中...🤔', true);
+  setTimeout(requestAiMove,50);
 });
 
-// --- AI Move Function (Calls Backend) ---
-async function requestAiMove() {
-    if (gameOver) return;
-
-    console.log("Requesting AI move from backend...");
-    try {
-        // 使用上面定义的 AI_BACKEND_URL (已修改为本地地址)
-        const response = await fetch(AI_BACKEND_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ board: board, depth: currentDepth }) // Send current board state and depth
-        });
-
-        if (!response.ok) {
-            // Handle HTTP errors
-            const errorData = await response.json().catch(() => ({})); // Try get JSON error, or empty obj
-            console.error(`Backend Error: ${response.status}`, errorData);
-            setStatus(`AI 错误: ${errorData.error || response.statusText} 😭`);
-            // Decide game state: end game or allow player retry? Here maybe end it.
-            // gameOver = true; // Option 1: End game on error
-            playerTurn = true; // Option 2: Give turn back to player? Risky.
-            setStatus("发生错误，请重试或刷新"); // Reset status without thinking indicator
-            return;
-        }
-
-        const data = await response.json();
-
-        if (data.error) {
-             console.error("Backend returned an error:", data.error);
-             setStatus(`AI 错误: ${data.error} 😭`);
-             // gameOver = true;
-             setStatus("AI 内部错误，请重试或刷新"); // Reset status without thinking indicator
-             playerTurn = true; // Give turn back
-             return;
-        }
-
-
-        if (data.move && typeof data.move.x === 'number' && typeof data.move.y === 'number') {
-            const { x, y } = data.move;
-
-             // Double check if the move is valid locally (optional, but good practice)
-             if (y < 0 || y >= size || x < 0 || x >= size || board[y][x] !== 0) {
-                 console.error(`Backend returned invalid move: (${x}, ${y}). Current board cell: ${board[y]?.[x]}`);
-                setStatus("AI 返回了无效的移动! 🤯");
-                // gameOver = true; // Probably end game
-                setStatus("AI 移动无效，请重试或刷新"); // Reset status without thinking indicator
-                playerTurn = true; // Give turn back
-                return;
-             }
-
-            console.log(`AI move received: (${x}, ${y})`);
-            board[y][x] = 2; // 2 represents AI
-            drawBoard();
-
-            if (checkWin(x, y, 2)) {
-                setStatus("AI赢了！🤖");
-                gameOver = true;
-                return;
-            }
-
-            if (isFull()) {
-                setStatus("平局！🤝");
-                gameOver = true;
-                return;
-            }
-
-            // It's player's turn again
-            playerTurn = true;
-            setStatus("您的回合"); // Remove thinking class
-
-        } else {
-            console.error("Invalid response format from backend:", data);
-            setStatus("AI响应格式错误! 😵");
-            setStatus("AI 响应错误，请重试或刷新"); // Reset status without thinking indicator
-            playerTurn = true; // Give turn back
-            // gameOver = true;
-        }
-
-    } catch (error) {
-        console.error('Network error or failed to fetch AI move:', error);
-        setStatus("无法连接到AI服务器! 🔌");
-        // Handle network error - maybe revert turn? Or indicate connection lost
-        // playerTurn = true; // Give turn back?
-        setStatus("网络错误，请检查连接或刷新"); // Reset status without thinking indicator
-        playerTurn = true; // Give turn back
+async function requestAiMove(){
+  if(gameOver) return;
+  try{
+    let res = await fetch(API,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ board, depth:currentDepth, threads:currentThreads })
+    });
+    let data = await res.json();
+    if(data.error){
+      setStatus(`AI 错误: ${data.error}`); playerTurn=true; return;
     }
+    let {x,y}=data.move;
+    board[y][x]=2; drawBoard();
+    if(checkWin(x,y,2)){ setStatus('AI 赢了！🤖'); gameOver=true; return; }
+    if(isFull()){ setStatus('平局！🤝'); gameOver=true; return; }
+    playerTurn=true; setStatus('您的回合');
+  }catch(err){
+    console.error(err);
+    setStatus('无法连接到 AI 服务器！');
+    playerTurn=true;
+  }
 }
 
-// --- Control Functions (Modified resetGame, aiFirst calls backend) ---
-function setStatus(message, isThinking = false) {
-    const statusDiv = document.getElementById('status');
-    const textSpan = statusDiv.firstChild; // Get the text node
-    textSpan.nodeValue = message; // Update only the text part
-
-    if (isThinking) {
-        statusDiv.classList.add('thinking');
-    } else {
-        statusDiv.classList.remove('thinking');
-    }
+function setStatus(msg, thinking=false){
+  const st = document.getElementById('status');
+  st.textContent = msg;
+  if(thinking) st.classList.add('thinking');
+  else        st.classList.remove('thinking');
 }
 
 function resetGame(){
-  board = Array.from({length:size},()=>Array(size).fill(0));
-  gameOver = false;
-  playerTurn = true;
-  drawBoard();
-  setStatus("游戏重置，您的回合");
-  // Keep selected difficulty
+  board = Array.from({length:N},()=>Array(N).fill(0));
+  gameOver=false; playerTurn=true;
+  drawBoard(); setStatus('游戏已重置，您的回合');
+}
+function setDepth(v){
+  currentDepth = +v;
+  document.getElementById('depthVal').textContent=v;
+  resetGame();
+}
+function setThreads(v){
+  currentThreads = +v;
+  document.getElementById('threadVal').textContent=v;
+  // 线程改动无需重置棋局，可以不调用 resetGame()
 }
 
-function setDifficulty(level) {
-    currentDepth = parseInt(level, 10);
-    console.log(`难度设置为: ${level}, 搜索深度: ${currentDepth}`);
-    // Reset game when difficulty changes
-    resetGame();
-    setStatus(`难度已切换 (${level})，游戏重置，您的回合`);
+function aiFirst(){
+  resetGame();
+  playerTurn=false;
+  setStatus('AI 先手...🤔',true);
+  setTimeout(requestAiMove,50);
 }
 
-function aiFirst() {
-    resetGame();
-    playerTurn = false;
-    setStatus("AI先手，思考中...🤔", true); // Show thinking indicator
-    // Option 1: Let AI calculate the first move via backend (slower first turn)
-    setTimeout(requestAiMove, 50);
-
-    // Option 2: AI always plays center first (faster first turn)
-    /*
-    let centerX = Math.floor(size / 2);
-    let centerY = Math.floor(size / 2);
-    if (board[centerY][centerX] === 0) {
-         board[centerY][centerX] = 2;
-         drawBoard();
-         playerTurn = true;
-         setStatus("您的回合");
-    } else {
-        // Fallback if center somehow taken (shouldn't happen on reset)
-         setStatus("AI先手，思考中...🤔", true);
-         setTimeout(requestAiMove, 50);
-    }
-    */
-}
-
-// --- Initial Setup ---
-drawBoard(); // Initial draw
-// Ensure the default checked difficulty matches currentDepth
-document.querySelector(`input[name="difficulty"][value="${currentDepth}"]`).checked = true;
+// 初始画面
+drawBoard();
+document.getElementById('depthVal').textContent   = currentDepth;
+document.getElementById('threadVal').textContent  = currentThreads;
 </script>
 </body>
 </html>
