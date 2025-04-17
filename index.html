@@ -2,8 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
-<title>自定义难度 & 线程数 AI 五子棋</title>
-<style>
+<title>自定义难度 & 并行工作单元 AI 五子棋</title> <style>
   body{font-family:sans-serif;text-align:center;}
   canvas{border:1px solid #333; cursor:pointer;}
   #status{margin-top:10px;font-size:1.2em;}
@@ -14,12 +13,10 @@
 </style>
 </head>
 <body>
-<h1>AI 五子棋 —— 自定义难度 & 线程数</h1>
-
-<div class="controls">
+<h1>AI 五子棋 —— 自定义难度 & 并行工作单元</h1> <div class="controls">
   <label>搜索深度: <input type="range" id="depthRange" min="1" max="12" value="3"
         oninput="setDepth(this.value)" /> <span id="depthVal">3</span></label>
-  <label>线程数:   <input type="range" id="threadRange" min="1" max="100" value="4"
+  <label>并行工作单元: <input type="range" id="threadRange" min="1" max="100" value="4"
         oninput="setThreads(this.value)" /> <span id="threadVal">4</span></label>
 </div>
 
@@ -33,145 +30,267 @@
 <script>
 const canvas = document.getElementById('board'),
       ctx    = canvas.getContext('2d'),
-      N      = 15,
-      cell   = canvas.width/N;
-let board = Array.from({length:N},()=>Array(N).fill(0)),
+      N      = 15, // Board size (15x15)
+      cell   = canvas.width/N; // Size of each cell
+let board = Array.from({length:N},()=>Array(N).fill(0)), // 0: Empty, 1: Player, 2: AI
     gameOver = false,
-    playerTurn = true,
-    currentDepth = 3,
-    currentThreads = 4;
+    playerTurn = true, // Player goes first by default
+    currentDepth = 3,  // Default AI search depth
+    currentThreads = 4; // Default number of parallel workers (passed as 'threads' to backend)
 
-const API = 'http://127.0.0.1:5000/ai_move';
+const API = 'http://127.0.0.1:5000/ai_move'; // Backend API endpoint
 
+// Function to draw the board and pieces
 function drawBoard(){
-  ctx.clearRect(0,0,600,600);
-  ctx.fillStyle='#f0d9b5';
-  ctx.fillRect(0,0,600,600);
-  ctx.strokeStyle='#333'; ctx.lineWidth=1;
+  ctx.clearRect(0,0,canvas.width,canvas.height); // Clear canvas
+
+  // Draw board background
+  ctx.fillStyle='#f0d9b5'; // Light wood color
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // Draw grid lines
+  ctx.strokeStyle='#333'; // Dark lines
+  ctx.lineWidth=1;
   for(let i=0;i<N;i++){
+    // Horizontal lines
     ctx.beginPath();
-    ctx.moveTo(cell/2,cell/2+i*cell);
-    ctx.lineTo(600-cell/2,cell/2+i*cell);
+    ctx.moveTo(cell/2, cell/2 + i*cell);
+    ctx.lineTo(canvas.width - cell/2, cell/2 + i*cell);
     ctx.stroke();
+    // Vertical lines
     ctx.beginPath();
-    ctx.moveTo(cell/2+i*cell,cell/2);
-    ctx.lineTo(cell/2+i*cell,600-cell/2);
+    ctx.moveTo(cell/2 + i*cell, cell/2);
+    ctx.lineTo(cell/2 + i*cell, canvas.height - cell/2);
     ctx.stroke();
   }
-  // 星位
-  [[3,3],[11,3],[3,11],[11,11],[7,7]].forEach(p=>{
+
+  // Draw star points (tianyuan and others)
+  const starPoints = [[3,3],[11,3],[3,11],[11,11],[7,7]]; // Coordinates (0-indexed)
+  ctx.fillStyle = '#333';
+  starPoints.forEach(p=>{
     ctx.beginPath();
-    ctx.arc(cell/2+p[0]*cell,cell/2+p[1]*cell,cell*0.1,0,2*Math.PI);
+    ctx.arc(cell/2 + p[0]*cell, cell/2 + p[1]*cell, cell*0.1, 0, 2*Math.PI); // Small black dots
     ctx.fill();
   });
-  // 棋子
-  for(let y=0;y<N;y++){
-    for(let x=0;x<N;x++){
-      if(board[y][x]){
+
+  // Draw pieces
+  for(let y=0; y<N; y++){
+    for(let x=0; x<N; x++){
+      if(board[y][x]){ // If the cell is not empty
         ctx.beginPath();
-        ctx.arc(cell/2+x*cell,cell/2+y*cell,cell*0.4,0,2*Math.PI);
-        ctx.fillStyle = board[y][x]===1 ? 'black':'#D80000';
+        ctx.arc(cell/2 + x*cell, cell/2 + y*cell, cell*0.4, 0, 2*Math.PI); // Draw a circle
+        // Player 1 is black, Player 2 (AI) is red (or white if preferred)
+        ctx.fillStyle = board[y][x]===1 ? 'black' : '#D80000'; // Red for AI
+        // Add a subtle shadow for 3D effect
         ctx.shadowColor='rgba(0,0,0,0.4)';
         ctx.shadowBlur=3; ctx.shadowOffsetX=1; ctx.shadowOffsetY=1;
         ctx.fill();
-        ctx.shadowColor='transparent';
+        ctx.shadowColor='transparent'; // Reset shadow for next elements
       }
     }
   }
 }
 
+// Function to check if player 'p' wins after placing a piece at (x,y)
 function checkWin(x,y,p){
-  if(x<0||y<0||x>=N||y>=N||board[y][x]!==p) return false;
-  const dirs=[[1,0],[0,1],[1,1],[1,-1]];
+  // Basic check: Ensure the placed piece is valid and belongs to player p
+  if(x<0 || y<0 || x>=N || y>=N || board[y][x] !== p) return false;
+
+  const dirs=[[1,0],[0,1],[1,1],[1,-1]]; // Directions: H, V, Diag\, Diag/
   for(let [dx,dy] of dirs){
-    let cnt=1;
-    for(let i=1;i<5;i++){
+    let cnt=1; // Count consecutive pieces (including the one just placed)
+    // Check in the positive direction
+    for(let i=1; i<5; i++){
       let nx=x+i*dx, ny=y+i*dy;
-      if(nx<0||ny<0||nx>=N||ny>=N||board[ny][nx]!==p) break;
+      if(nx<0 || ny<0 || nx>=N || ny>=N || board[ny][nx] !== p) break; // Out of bounds or different piece
       cnt++;
     }
-    for(let i=1;i<5;i++){
+    // Check in the negative direction
+    for(let i=1; i<5; i++){
       let nx=x-i*dx, ny=y-i*dy;
-      if(nx<0||ny<0||nx>=N||ny>=N||board[ny][nx]!==p) break;
+      if(nx<0 || ny<0 || nx>=N || ny>=N || board[ny][nx] !== p) break;
       cnt++;
     }
-    if(cnt>=5) return true;
+    if(cnt>=5) return true; // Found a five-in-a-row
   }
-  return false;
+  return false; // No five-in-a-row found in any direction
 }
 
-function isFull(){ return board.every(r=>r.every(c=>c!==0)); }
+// Function to check if the board is full (draw)
+function isFull(){
+  return board.every(row => row.every(cell => cell !== 0));
+}
 
-canvas.addEventListener('click',e=>{
-  if(gameOver||!playerTurn) return;
-  let rect=canvas.getBoundingClientRect(),
-      x=Math.floor((e.clientX-rect.left)/cell),
-      y=Math.floor((e.clientY-rect.top)/cell);
-  if(x<0||y<0||x>=N||y>=N||board[y][x]!==0) return;
-  board[y][x]=1; drawBoard();
-  if(checkWin(x,y,1)){ setStatus('你赢了！🎉'); gameOver=true; return; }
-  if(isFull()){ setStatus('平局！🤝'); gameOver=true; return; }
-  playerTurn=false;
-  setStatus('AI 思考中...🤔', true);
-  setTimeout(requestAiMove,50);
+// Event listener for player clicks on the canvas
+canvas.addEventListener('click', e => {
+  // Ignore clicks if game is over or it's not the player's turn
+  if(gameOver || !playerTurn) return;
+
+  // Calculate clicked cell coordinates
+  let rect=canvas.getBoundingClientRect();
+  let x=Math.floor((e.clientX - rect.left) / cell);
+  let y=Math.floor((e.clientY - rect.top) / cell);
+
+  // Check if the click is valid (within bounds and on an empty cell)
+  if(x<0 || y<0 || x>=N || y>=N || board[y][x] !== 0) return;
+
+  // Place player's piece (1)
+  board[y][x] = 1;
+  drawBoard(); // Redraw the board
+
+  // Check if player won
+  if(checkWin(x, y, 1)){
+    setStatus('你赢了！🎉');
+    gameOver = true;
+    return;
+  }
+
+  // Check for draw
+  if(isFull()){
+    setStatus('平局！🤝');
+    gameOver = true;
+    return;
+  }
+
+  // Switch turn to AI
+  playerTurn = false;
+  setStatus('AI 思考中...🤔', true); // Show thinking indicator
+  // Use setTimeout to allow the board to redraw before potential blocking AI calculation
+  setTimeout(requestAiMove, 50);
 });
 
+// Function to request AI move from the backend
 async function requestAiMove(){
-  if(gameOver) return;
-  try{
-    let res = await fetch(API,{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ board, depth:currentDepth, threads:currentThreads })
+  if(gameOver) return; // Don't request if game already ended
+
+  try {
+    // Send current board state, depth, and worker count to backend
+    let res = await fetch(API, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ board: board, depth: currentDepth, threads: currentThreads }) // Parameter name is still 'threads'
     });
-    let data = await res.json();
-    if(data.error){
-      setStatus(`AI 错误: ${data.error}`); playerTurn=true; return;
+
+    if (!res.ok) { // Handle HTTP errors (like 500 Internal Server Error)
+        let errorText = await res.text();
+        try { // Try to parse as JSON error object
+             let errorData = JSON.parse(errorText);
+             setStatus(`AI 错误: ${errorData.error || `服务器错误 ${res.status}`}`);
+        } catch (parseError) { // If response is not JSON
+             setStatus(`AI 错误: 服务器响应异常 (状态 ${res.status})`);
+             console.error("Non-JSON error response:", errorText);
+        }
+        playerTurn = true; // Give turn back to player on error
+        return;
     }
-    let {x,y}=data.move;
-    board[y][x]=2; drawBoard();
-    if(checkWin(x,y,2)){ setStatus('AI 赢了！🤖'); gameOver=true; return; }
-    if(isFull()){ setStatus('平局！🤝'); gameOver=true; return; }
-    playerTurn=true; setStatus('您的回合');
-  }catch(err){
-    console.error(err);
-    setStatus('无法连接到 AI 服务器！');
-    playerTurn=true;
+
+    let data = await res.json();
+
+    // Handle potential logical errors returned in JSON
+    if(data.error){
+      setStatus(`AI 错误: ${data.error}`);
+      playerTurn=true; // Give turn back to player
+      return;
+    }
+
+    // Process successful AI move
+    if (data.move && data.move.x !== undefined && data.move.y !== undefined) {
+        let {x, y} = data.move;
+        // Ensure AI move is valid (though backend should guarantee this)
+        if (x >= 0 && y >= 0 && x < N && y < N && board[y][x] === 0) {
+            board[y][x] = 2; // Place AI's piece (2)
+            drawBoard(); // Redraw
+
+            // Check if AI won
+            if(checkWin(x, y, 2)){
+                setStatus('AI 赢了！🤖');
+                gameOver = true;
+                return;
+            }
+
+            // Check for draw
+            if(isFull()){
+                setStatus('平局！🤝');
+                gameOver = true;
+                return;
+            }
+
+            // Game continues, switch back to player's turn
+            playerTurn = true;
+            setStatus('您的回合');
+        } else {
+            setStatus('AI 返回了无效的移动！');
+            console.error("Invalid move received from AI:", data.move);
+            playerTurn = true; // Give turn back to player
+        }
+    } else {
+         setStatus('AI 未能返回有效移动！');
+         console.error("Invalid response structure from AI:", data);
+         playerTurn = true; // Give turn back to player
+    }
+
+  } catch(err) { // Handle network errors (fetch failed)
+    console.error("Network or fetch error:", err);
+    setStatus('无法连接到 AI 服务器！请检查服务器是否运行。');
+    playerTurn=true; // Allow player to potentially try again? Or indicate connection issue more clearly.
   }
 }
 
+// Function to update the status message and thinking indicator
 function setStatus(msg, thinking=false){
   const st = document.getElementById('status');
-  st.textContent = msg;
+  // Clear previous content and set new message
+  st.textContent = '';
+  st.appendChild(document.createTextNode(msg)); // Use text node to prevent HTML injection
+
+  const thinkingIndicator = st.querySelector('.thinking-indicator') || document.createElement('span');
+  thinkingIndicator.className = 'thinking-indicator';
+  thinkingIndicator.textContent = ' (AI 思考中...)';
+  thinkingIndicator.style.display = thinking ? 'inline' : 'none'; // Show/hide indicator
+  st.appendChild(thinkingIndicator); // Ensure indicator is present
+
+  // Add/remove class for potential CSS styling based on thinking state
   if(thinking) st.classList.add('thinking');
-  else        st.classList.remove('thinking');
+  else st.classList.remove('thinking');
 }
 
+// Function to reset the game state
 function resetGame(){
-  board = Array.from({length:N},()=>Array(N).fill(0));
-  gameOver=false; playerTurn=true;
-  drawBoard(); setStatus('游戏已重置，您的回合');
+  board = Array.from({length:N},()=>Array(N).fill(0)); // Clear board
+  gameOver = false; // Reset game over flag
+  playerTurn = true; // Player starts again
+  drawBoard(); // Redraw empty board
+  setStatus('游戏已重置，您的回合'); // Reset status message
 }
+
+// Function called when depth slider changes
 function setDepth(v){
-  currentDepth = +v;
-  document.getElementById('depthVal').textContent=v;
-  resetGame();
+  currentDepth = +v; // Update depth variable (convert string to number)
+  document.getElementById('depthVal').textContent = v; // Update displayed value
+  resetGame(); // Reset the game when difficulty changes
 }
+
+// Function called when threads/workers slider changes
 function setThreads(v){
-  currentThreads = +v;
-  document.getElementById('threadVal').textContent=v;
-  // 线程改动无需重置棋局，可以不调用 resetGame()
+  currentThreads = +v; // Update workers variable
+  document.getElementById('threadVal').textContent = v; // Update displayed value
+  // Changing workers doesn't necessarily require a game reset,
+  // but resetting ensures consistency if a game is in progress.
+  // You could choose to reset or not:
+  // resetGame(); // Optional: Reset game when workers change
 }
 
+// Function to start the game with AI moving first
 function aiFirst(){
-  resetGame();
-  playerTurn=false;
-  setStatus('AI 先手...🤔',true);
-  setTimeout(requestAiMove,50);
+  resetGame(); // Reset to empty board
+  playerTurn = false; // AI's turn
+  setStatus('AI 先手...🤔', true); // Update status
+  setTimeout(requestAiMove, 50); // Request AI move
 }
 
-// 初始画面
-drawBoard();
+// Initial setup when the page loads
+drawBoard(); // Draw the initial empty board
+// Set initial display values for sliders
 document.getElementById('depthVal').textContent   = currentDepth;
 document.getElementById('threadVal').textContent  = currentThreads;
 </script>
