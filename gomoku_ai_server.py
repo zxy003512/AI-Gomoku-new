@@ -6,484 +6,426 @@ import math
 import random
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-# 导入 ProcessPoolExecutor
 from concurrent.futures import ProcessPoolExecutor
 import copy
 import traceback # Import traceback for better error logging
 
-# 如果是 PyInstaller 打包后，sys._MEIPASS 指向临时资源目录
+# --- Numba and NumPy Imports ---
+import numpy as np
+import numba
+
+# --- Constants ---
+SIZE   = 30 # Board size remains 30x30
+PLAYER = np.int8(1)
+AI     = np.int8(2)
+EMPTY  = np.int8(0)
+
 BASE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
 
 app = Flask(__name__, static_folder=None)
 CORS(app)
 
-# --- 常量 ---
-SIZE   = 15
-PLAYER = 1
-AI     = 2
-EMPTY  = 0
+# --- Score constants ---
+SCORE_FIVE = 100000000
+SCORE_LIVE_FOUR = 10000000
+SCORE_RUSH_FOUR = 500000
+SCORE_LIVE_THREE = 50000
+SCORE_SLEEP_THREE = 5000
+SCORE_LIVE_TWO = 500
+SCORE_SLEEP_TWO = 100
 
-# 棋型打分（可以按需微调）
-SCORE = {
-    "FIVE":          100000000,
-    "LIVE_FOUR":     10000000,
-    "RUSH_FOUR":     500000,
-    "LIVE_THREE":    50000,
-    "SLEEP_THREE":   5000,
-    "LIVE_TWO":      500,
-    "SLEEP_TWO":     100,
-    "CENTER_BONUS":  1 # 这个好像没用到，可以考虑加到评估里或移除
-}
-
-# Zobrist 哈希表，全局一次性初始化
+# Zobrist Hash Table (uses SIZE=30)
 zobrist_table = [[[random.getrandbits(64) for _ in range(3)]
                     for _ in range(SIZE)]
                    for _ in range(SIZE)]
-empty_board_hash = 0 # 这个好像也没用到
 
-# --- 公共工具函数 ---
-def is_valid(board, x, y):
-    # Simplified check assuming board size is constant SIZE
-    return 0 <= x < SIZE and 0 <= y < SIZE
+# --- Numba Accelerated Helper Functions (No changes needed) ---
 
-def check_win(board, player, x, y):
-    """判断 player 在 (x,y) 下子后是否五连"""
-    if not (0 <= x < SIZE and 0 <= y < SIZE): return False # 先检查坐标有效性
-    # Check only if the point is actually the player's piece - important!
-    # The check might be called on an assumed move, so ensure the piece exists.
-    if board[y][x] != player: return False # 确保该点是刚下的子 或 评估时假设的子
-
-    directions = [(1,0),(0,1),(1,1),(1,-1)] # H, V, Diag\, Diag/
-    for dx,dy in directions:
+@numba.njit(cache=True)
+def _check_win_numba(board_arr: np.ndarray, player: np.int8, x: int, y: int, board_size: int) -> bool:
+    """Numba-accelerated win check."""
+    if not (0 <= y < board_size and 0 <= x < board_size and board_arr[y, x] == player):
+         return False
+    directions = ((1, 0), (0, 1), (1, 1), (1, -1))
+    for dx, dy in directions:
         cnt = 1
-        # 正方向
-        for i in range(1,5):
-            nx,ny = x+i*dx, y+i*dy
-            # Use direct bounds check, assuming SIZE is accessible or passed if needed
-            if not (0 <= nx < SIZE and 0 <= ny < SIZE) or board[ny][nx] != player:
-                break
-            cnt+=1
-        # 反方向
-        for i in range(1,5):
-            nx,ny = x-i*dx, y-i*dy
-            if not (0 <= nx < SIZE and 0 <= ny < SIZE) or board[ny][nx] != player:
-                break
-            cnt+=1
-        if cnt>=5:
+        for sign in numba.int64([-1, 1]): # Check both directions using Numba typed loop
+            for i in range(1, 5):
+                nx, ny = x + i * dx * sign, y + i * dy * sign
+                if not (0 <= nx < board_size and 0 <= ny < board_size and board_arr[ny, nx] == player):
+                    break
+                cnt += 1
+        if cnt >= 5:
             return True
     return False
 
-# --- AI 核心 ---
-class GomokuAI:
+@numba.njit(cache=True)
+def _score_pattern_numba(count: int, open_ends: int,
+                         s_five: int, s_live4: int, s_rush4: int,
+                         s_live3: int, s_sleep3: int, s_live2: int, s_sleep2: int) -> int:
+    """Numba-accelerated pattern scoring helper."""
+    if count >= 5: return s_five
+    if open_ends == 0 and count < 5: return 0
+    if count == 4: return s_live4 if open_ends == 2 else s_rush4
+    if count == 3: return s_live3 if open_ends == 2 else s_sleep3
+    if count == 2: return s_live2 if open_ends == 2 else s_sleep2
+    return 0
 
+@numba.njit(cache=True)
+def _evaluate_line_numba(line: np.ndarray, player: np.int8, opponent: np.int8,
+                         s_five: int, s_live4: int, s_rush4: int,
+                         s_live3: int, s_sleep3: int, s_live2: int, s_sleep2: int) -> int:
+    """Numba-accelerated line evaluation."""
+    score = 0
+    n = len(line)
+    i = 0
+    while i < n:
+        if line[i] == player:
+            count = 0
+            start_idx = i
+            while i < n and line[i] == player: count += 1; i += 1
+            left_open = (start_idx > 0 and line[start_idx - 1] == EMPTY)
+            right_open = (i < n and line[i] == EMPTY)
+            open_ends = (1 if left_open else 0) + (1 if right_open else 0)
+            score += _score_pattern_numba(count, open_ends, s_five, s_live4, s_rush4, s_live3, s_sleep3, s_live2, s_sleep2)
+        else: i += 1
+
+    # Broken patterns
+    for j in range(n - 3):
+        # P E P P
+        if line[j] == player and line[j+1] == EMPTY and line[j+2] == player and line[j+3] == player:
+            left_empty = (j > 0 and line[j-1] == EMPTY)
+            right_empty = (j + 4 < n and line[j+4] == EMPTY)
+            if left_empty and right_empty: score += int(s_live3 * 0.8)
+            elif left_empty or right_empty: score += s_sleep3
+        # P P E P
+        elif line[j] == player and line[j+1] == player and line[j+2] == EMPTY and line[j+3] == player:
+            left_empty = (j > 0 and line[j-1] == EMPTY)
+            right_empty = (j + 4 < n and line[j+4] == EMPTY)
+            if left_empty and right_empty: score += int(s_live3 * 0.8)
+            elif left_empty or right_empty: score += s_sleep3
+    return score
+
+@numba.njit(cache=True)
+def _calculate_player_score_numba(board_arr: np.ndarray, player: np.int8, opponent: np.int8,
+                                  board_size: int,
+                                  s_five: int, s_live4: int, s_rush4: int,
+                                  s_live3: int, s_sleep3: int, s_live2: int, s_sleep2: int) -> int:
+    """Numba-accelerated score calculation for a player."""
+    total_score = 0
+    scores = (s_five, s_live4, s_rush4, s_live3, s_sleep3, s_live2, s_sleep2)
+
+    # Rows & Columns
+    for i in range(board_size):
+        total_score += _evaluate_line_numba(board_arr[i, :], player, opponent, *scores)
+        total_score += _evaluate_line_numba(board_arr[:, i], player, opponent, *scores)
+
+    # Diagonals
+    flipped_board = np.fliplr(board_arr) # Pre-flip for anti-diagonals
+    for k in range(-(board_size - 5), board_size - 4):
+        diag = np.diag(board_arr, k=k)
+        anti_diag = np.diag(flipped_board, k=k)
+        if len(diag) >= 5: # np.diag might return shorter arrays for corner diagonals
+             total_score += _evaluate_line_numba(diag, player, opponent, *scores)
+        if len(anti_diag) >= 5:
+             total_score += _evaluate_line_numba(anti_diag, player, opponent, *scores)
+
+    return total_score
+
+# --- Public Utility Functions (No changes needed) ---
+def check_win(board, player, x, y):
+    """Public wrapper for win check"""
+    if not (0 <= x < SIZE and 0 <= y < SIZE): return False
+    board_arr = np.array(board, dtype=np.int8)
+    player_np = np.int8(player)
+    return _check_win_numba(board_arr, player_np, x, y, SIZE)
+
+# --- AI Core Class (No major logic changes needed) ---
+class GomokuAI:
     def __init__(self, board, depth, max_workers=None):
-        self.initial_board = [row[:] for row in board]
+        self.initial_board_list = [row[:] for row in board]
         self.depth = depth
         self.max_workers = max_workers if max_workers is not None else os.cpu_count() or 1
-        # 限制最大工作单元数
-        self.max_workers = max(1, min(self.max_workers, os.cpu_count() or 4))
+        self.max_workers = max(1, min(self.max_workers, os.cpu_count() * 4 or 8)) # Allow more workers
+        self.score_constants = (
+            SCORE_FIVE, SCORE_LIVE_FOUR, SCORE_RUSH_FOUR,
+            SCORE_LIVE_THREE, SCORE_SLEEP_THREE, SCORE_LIVE_TWO, SCORE_SLEEP_TWO
+        )
+        self.transposition_table = {} # Instance-level table for multi-processing safety
 
-    def _hash_board(self, board):
+    def _hash_board(self, board_list):
         h = 0
         for r in range(SIZE):
             for c in range(SIZE):
-                p = board[r][c]
-                if p != EMPTY:
-                    # Ensure zobrist_table is accessible
-                    h ^= zobrist_table[r][c][p]
+                p = board_list[r][c] # Should be 0, 1, or 2
+                if p != EMPTY: h ^= zobrist_table[r][c][p]
         return h
 
     def _update_hash(self, h, r, c, player):
-         # Ensure zobrist_table is accessible
         return h ^ zobrist_table[r][c][player]
 
     def find_best_move(self):
         start_time = time.time()
         best_score = -math.inf
-        best_move  = None
-        board = [row[:] for row in self.initial_board] # Use a copy
+        best_move = None
+        board_list = [row[:] for row in self.initial_board_list]
 
-        # 1. 先一步制胜？
-        win1 = self._find_immediate_win(board, AI)
-        if win1:
-            print(f"[AI] 立即获胜于 {win1}")
-            return {"x": win1[1], "y": win1[0]}
+        # 1. Check immediate win/block
+        win1 = self._find_immediate_win(board_list, AI)
+        if win1: print(f"[AI] Immediate win at {win1}"); return {"x": win1[1], "y": win1[0]}
+        block1 = self._find_immediate_win(board_list, PLAYER)
+        if block1: print(f"[AI] Blocking immediate loss at {block1}"); return {"x": block1[1], "y": block1[0]}
 
-        # 2. 玩家一步制胜？去阻挡
-        block1 = self._find_immediate_win(board, PLAYER)
-        if block1:
-            print(f"[AI] 立即阻止对手获胜于 {block1}")
-            return {"x": block1[1], "y": block1[0]}
+        # 2. Minimax Search
+        print(f"[AI] Starting search: Depth={self.depth}, Workers={self.max_workers}, Size={SIZE}x{SIZE}")
+        moves = self._generate_moves(board_list, AI)
+        if not moves: return self._fallback_move(board_list) # Handle no moves
 
-        # 3. Minimax+αβ+置换表+多进程
-        print(f"[AI] 搜索深度 depth={self.depth} 并行工作单元数 max_workers={self.max_workers} (使用多进程)")
-        moves = self._generate_moves(board, AI) # Generate moves for AI
-        if not moves:
-            print("[AI] 没有可选的移动了?")
-            # Find any empty spot as fallback
-            for rr in range(SIZE):
-                for cc in range(SIZE):
-                    if board[rr][cc]==EMPTY: return {"x":cc,"y":rr}
-            return {"x":SIZE//2,"y":SIZE//2} # Should not happen on non-full board
+        # Heuristic move ordering
+        scored_moves = self._score_initial_moves(board_list, moves, AI)
+        sorted_moves = [mv for mv, _ in scored_moves] # Keep only moves
 
-        # 启发式排序
-        scored = []
-        for r,c in moves:
-            board[r][c] = AI
-            # Evaluate the board *after* placing the AI piece temporarily
-            sc = self._evaluate_board(board, AI) # Evaluate from AI's perspective
-            board[r][c] = EMPTY # Undo move
-            scored.append(((r,c),sc))
-        scored.sort(key=lambda x: x[1], reverse=True) # Sort descending by score
-        sorted_moves = [mv for mv,_ in scored]
-        print(f"[AI] 候选走法数量: {len(sorted_moves)}. 最佳初步评估走法: {sorted_moves[0]} 分数: {scored[0][1]:.1f}" if sorted_moves else "[AI] 无候选走法")
+        if not sorted_moves: return self._fallback_move(board_list) # Handle no valid moves after scoring
 
-        # 置换表 - 每个进程将使用自己的独立表 (passed as argument)
-        init_hash = self._hash_board(board)
+        print(f"[AI] Candidates: {len(sorted_moves)}. Top: {sorted_moves[0]} (Score: {scored_moves[0][1]:.1f})")
 
-        futures = []
-        results = {} # 存储 future -> move 的映射
+        # --- Multiprocessing ---
+        init_hash = self._hash_board(board_list)
+        futures = {} # future -> move mapping
 
-        # 使用 ProcessPoolExecutor
+        # Limit evaluated moves for performance, especially at higher depths
+        # More aggressive pruning for deeper searches
+        max_moves_to_eval = min(len(sorted_moves), 25 + (5 - min(self.depth, 5)) * 5)
+        moves_to_evaluate = sorted_moves[:max_moves_to_eval]
+        print(f"[AI] Evaluating top {len(moves_to_evaluate)} moves...")
+
         with ProcessPoolExecutor(max_workers=self.max_workers) as pool:
-            for r,c in sorted_moves:
-                # 为每个任务创建棋盘副本
-                b2 = [row[:] for row in board]
-                b2[r][c] = AI # AI makes the move
-                h2 = self._update_hash(init_hash, r, c, AI) # Update hash for the move
+            for r, c in moves_to_evaluate:
+                b2_list = [row[:] for row in board_list]
+                # Assume move is valid based on generation/scoring phase
+                b2_list[r][c] = AI
+                h2 = self._update_hash(init_hash, r, c, AI)
+                fut = pool.submit(self._minimax_memo_process_wrapper, # Wrapper for instance method
+                                  b2_list, self.depth - 1, False, -math.inf, math.inf, h2)
+                futures[fut] = (r, c)
 
-                # 提交任务给进程池: call _minimax_memo for the opponent's turn
-                # Pass a *new empty dictionary* as the transposition table for each process
-                fut = pool.submit(self._minimax_memo, # Target the instance method directly
-                                  b2,                 # Board state *after* AI's move
-                                  self.depth - 1,    # Remaining depth
-                                  False,              # Now it's opponent's (minimizing) turn
-                                  -math.inf,          # Initial alpha for this branch
-                                  math.inf,           # Initial beta for this branch
-                                  h2,                 # Hash after AI's move
-                                  {})                # <<< FIX: Pass an empty dict as the table
-                futures.append(fut)
-                results[fut] = (r,c) # Associate future with the move (r, c)
+            # Collect results
+            results_list = []
+            for fut in futures:
+                move = futures[fut]
+                try:
+                    # Timeout can be added here if needed: fut.result(timeout=...)
+                    sc = fut.result()
+                    print(f"[AI]   Eval {move} -> Score: {sc:.1f}")
+                    results_list.append({'move': move, 'score': sc})
+                except Exception as e:
+                    print(f"[AI] Error evaluating move {move}: {e}")
+                    # Assign a very bad score if evaluation fails?
+                    results_list.append({'move': move, 'score': -math.inf - 1}) # Mark as failed
 
-            # 收集结果 (按提交顺序或完成顺序处理都可以)
-            # 按提交顺序获取结果（更简单，便于调试）
-            for i, fut in enumerate(futures):
-                 move = results[fut]
-                 try:
-                     # The result 'sc' is the score *from the perspective of the AI*
-                     # returned by the minimax call for the opponent's turn.
-                     sc = fut.result() # Wait for the result (score)
-                     print(f"[AI]   评估走法 {move} -> 分数: {sc:.1f}")
-                     # AI wants to maximize this score
-                     if sc > best_score:
-                         best_score = sc
-                         best_move = move
-                 except Exception as e:
-                     # Important: Log the error and the move that caused it
-                     print(f"[AI] 子进程评估走法 {move} 时发生异常: {e}")
-                     traceback.print_exc() # Print full traceback for debugging
-                     # Fallback strategy: if the best move hasn't been set yet,
-                     # and this was the evaluation for the heuristically best move, use it.
-                     if best_move is None and i == 0:
-                         print(f"[AI]   WARN: 首选评估失败，暂时选择 {move}")
-                         best_move = move # Fallback to the first sorted move if its eval failed
-
-        # 如果所有进程都失败了，或者没有找到任何有效分数(best_score is still -inf)
-        # 选择启发式排序最好的那个
-        if best_move is None:
-            print("[AI] WARN: 所有子进程评估失败或无有效结果，选择初步评估最佳走法")
-            if sorted_moves:
-                best_move = sorted_moves[0]
+        if not results_list:
+             print("[AI] WARN: No results collected from workers. Using best initial move.")
+             best_move = sorted_moves[0]
+        else:
+            # Find the best move among successful evaluations
+            results_list.sort(key=lambda x: x['score'], reverse=True)
+            best_result = results_list[0]
+            # Check if the best score is actually viable (not the error score)
+            if best_result['score'] > -math.inf - 1:
+                 best_move = best_result['move']
+                 best_score = best_result['score']
             else:
-                # Extremely unlikely fallback if even generation failed
-                best_move = (SIZE//2, SIZE//2)
-                # Ensure the chosen spot is empty if possible
-                if board[best_move[0]][best_move[1]] != EMPTY:
-                     for r_fall in range(SIZE):
-                         for c_fall in range(SIZE):
-                             if board[r_fall][c_fall] == EMPTY:
-                                 best_move = (r_fall, c_fall)
-                                 break
-                         if board[best_move[0]][best_move[1]] == EMPTY: break
+                 # All evaluations might have failed
+                 print("[AI] WARN: All evaluations failed or returned error scores. Using best initial move.")
+                 best_move = sorted_moves[0] # Fallback to best heuristic move
+                 best_score = scored_moves[0][1] # Use its heuristic score
 
 
-        # Ensure a move is selected, even if score remains -inf due to errors
-        if best_move is None: # Should be handled above, but double-check
-             best_move = (SIZE//2, SIZE//2) # Absolute fallback
+        # Final fallback if something went critically wrong
+        if best_move is None:
+            print("[AI] CRITICAL WARN: No best move determined. Using fallback.")
+            best_move_coords = self._fallback_move(board_list)
+            # Check if fallback returned an error structure
+            if "error" in best_move_coords: return best_move_coords
+            best_move = (best_move_coords['y'], best_move_coords['x']) # Convert back to (r, c)
 
+        print(f"[AI] Selected move: {best_move} Score: {best_score:.1f} Time: {(time.time()-start_time):.2f}s")
+        return {"x": best_move[1], "y": best_move[0]} # Return as (x, y) dict
 
-        print(f"[AI] 选定走法 {best_move} 分数={best_score:.1f} 耗时 {(time.time()-start_time):.2f}s")
-        # Return move in {"x": col, "y": row} format
-        return {"x":best_move[1], "y":best_move[0]}
+    def _score_initial_moves(self, board_list, moves, player):
+        """Evaluate potential moves heuristically for ordering."""
+        scored = []
+        temp_board_arr = np.array(board_list, dtype=np.int8)
+        opponent = PLAYER if player == AI else AI
+        for r, c in moves:
+             if 0 <= r < SIZE and 0 <= c < SIZE and temp_board_arr[r, c] == EMPTY:
+                  temp_board_arr[r, c] = player
+                  # Evaluate score from AI's perspective regardless of who's move it is
+                  score = self._evaluate_board(temp_board_arr, AI)
+                  # Add bonus for moves near center on larger boards? Maybe not needed if eval handles it.
+                  # Add bonus for forcing moves (creating immediate threats)?
+                  temp_board_arr[r, c] = EMPTY
+                  scored.append(((r, c), score))
+        scored.sort(key=lambda x: x[1], reverse=True) # AI wants highest score first
+        return scored
 
+    def _fallback_move(self, board_list):
+        """Find a fallback move if normal logic fails."""
+        print("[AI] Executing fallback move logic.")
+        # Try center first
+        center_r, center_c = SIZE // 2, SIZE // 2
+        if board_list[center_r][center_c] == EMPTY:
+             print("[AI] Fallback: Center")
+             return {"x": center_c, "y": center_r}
+        # Try first available empty cell
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if board_list[r][c] == EMPTY:
+                     print(f"[AI] Fallback: First empty cell at ({r}, {c})")
+                     return {"x": c, "y": r}
+        # Should not happen if game isn't over
+        print("[AI] Fallback ERROR: No empty cells found!")
+        return {"error": "Board is full or AI error during fallback"}
 
-    # Removed the static _minimax_process_wrapper as it's no longer needed
-
-
-    def _find_immediate_win(self, board, player):
+    def _find_immediate_win(self, board_list, player):
         """Checks if 'player' can win in one move."""
-        # Iterate through potential moves generated by _generate_moves
-        # Use player here, could be AI or PLAYER depending on who we check for
-        for r,c in self._generate_moves(board, player):
-            if board[r][c]==EMPTY: # Only check empty spots
-                board[r][c]=player # Try the move
-                # check_win needs (board, player, x, y)
-                won = check_win(board, player, c, r) # Check if this move wins
-                board[r][c]=EMPTY # Undo the move
-                if won:
-                    return (r,c) # Return the winning move location
-        return None # No immediate win found
+        potential_moves = self._generate_moves(board_list, player)
+        temp_board_arr = np.array(board_list, dtype=np.int8)
+        player_np = np.int8(player)
+        for r, c in potential_moves:
+            if 0 <= r < SIZE and 0 <= c < SIZE and temp_board_arr[r, c] == EMPTY:
+                temp_board_arr[r, c] = player_np
+                won = _check_win_numba(temp_board_arr, player_np, c, r, SIZE)
+                temp_board_arr[r, c] = EMPTY
+                if won: return (r, c)
+        return None
 
-    def _minimax_memo(self, board, depth, is_max, alpha, beta, h, table):
-        """
-        Minimax algorithm with Alpha-Beta Pruning and Transposition Table.
-        'table' is the transposition table specific to this search branch/process.
-        Returns the score from the perspective of the AI player.
-        """
-        # Use tuple (hash, depth, is_max) as key for transposition table
+    # Wrapper needed because instance methods aren't directly picklable for ProcessPoolExecutor
+    def _minimax_memo_process_wrapper(self, board_list, depth, is_max, alpha, beta, h):
+         # Each process gets its own transposition table copy (passed implicitly via self)
+         # Or maybe pass table explicitly if instance state isn't reliable across processes?
+         # Let's try using the instance table for now, assuming ProcessPoolExecutor handles it.
+         # If issues arise, create table={} here and pass it recursively.
+         return self._minimax_memo(board_list, depth, is_max, alpha, beta, h, {}) # Pass empty table
+
+    def _minimax_memo(self, board_list, depth, is_max, alpha, beta, h, table):
+        """Minimax with Alpha-Beta and Transposition Table."""
         key = (h, depth, is_max)
-        if key in table:
-            return table[key]
+        if key in table: return table[key]
 
-        # Check terminal states: Win/Loss/Draw (or max depth reached)
-        # Use a quick check for existing win on the board *before* generating moves
-        # This check needs to be efficient.
-        winner = self._check_board_winner(board) # Check if someone *already* won
-        if winner == AI:
-             score = SCORE["FIVE"] * (depth + 1) # Faster win is better
+        board_arr = np.array(board_list, dtype=np.int8) # Needed for eval/check
+        current_player = AI if is_max else PLAYER
+        opponent = PLAYER if is_max else AI
+
+        # Check for terminal state (Win/Loss detected by opponent's last move simulation)
+        # Instead of full board check, use evaluate score - it includes win checks
+        current_eval_score = self._evaluate_board(board_arr, AI) # Evaluate from AI perspective
+        if abs(current_eval_score) >= SCORE_FIVE * 5: # Use threshold based on eval score
+             # Score needs to reflect depth: win sooner = better, lose later = better
+             # High positive score means AI won, High negative means Player won
+             # Return score relative to the *maximizing* player (AI)
+             score = current_eval_score * (depth + 1)
              table[key] = score
              return score
-        if winner == PLAYER:
-             score = -SCORE["FIVE"] * (depth + 1) # Faster loss is worse
-             table[key] = score
-             return score
-        # Consider draw? If no moves possible and no winner?
 
         if depth == 0:
-            # Evaluate leaf node using the board evaluation function
-            # Always evaluate from AI's perspective
-            score = self._evaluate_board(board, AI)
-            table[key]=score
-            return score
+            table[key] = current_eval_score # Return static evaluation at leaf
+            return current_eval_score
 
-        # Determine current player based on is_max flag
-        current_player = AI if is_max else PLAYER
-        moves = self._generate_moves(board, current_player)
+        moves = self._generate_moves(board_list, current_player)
+        if not moves: table[key] = current_eval_score; return current_eval_score # No moves -> draw state? return static eval
 
-        # If no moves possible from this state, evaluate the board
-        if not moves:
-            score = self._evaluate_board(board, AI)
-            table[key]=score
-            return score
+        # Move ordering inside minimax recursion
+        ordered_moves = self._order_minimax_moves(board_list, moves, current_player, is_max)
 
-        # --- Alpha-Beta Pruning Logic ---
-        if is_max: # AI's turn (Maximizing player)
-            best_val = -math.inf
-            # Optional: Sort moves here as well for better pruning (can be costly)
-            # sorted_moves = self._sort_moves(board, moves, AI)
-            for r, c in moves: # or sorted_moves
-                board[r][c] = AI # Make move
-                h2 = self._update_hash(h, r, c, AI)
-                val = self._minimax_memo(board, depth-1, False, alpha, beta, h2, table)
-                board[r][c] = EMPTY # Undo move
-                best_val = max(best_val, val)
-                alpha = max(alpha, best_val)
-                if beta <= alpha:
-                    break # Beta cut-off
-            table[key] = best_val
-            return best_val
-        else: # Player's turn (Minimizing player)
-            best_val = math.inf
-            # Optional: Sort moves for opponent
-            # sorted_moves = self._sort_moves(board, moves, PLAYER)
-            for r, c in moves: # or sorted_moves
-                board[r][c] = PLAYER # Make move
-                h2 = self._update_hash(h, r, c, PLAYER)
-                val = self._minimax_memo(board, depth-1, True, alpha, beta, h2, table)
-                board[r][c] = EMPTY # Undo move
-                best_val = min(best_val, val)
-                beta = min(beta, best_val)
-                if beta <= alpha:
-                    break # Alpha cut-off
-            table[key] = best_val
-            return best_val
+        # Alpha-Beta
+        best_val = -math.inf if is_max else math.inf
+        for r, c in ordered_moves:
+            # Ensure move is valid *again* (paranoid check)
+            if board_list[r][c] == EMPTY:
+                 board_list[r][c] = current_player
+                 h2 = self._update_hash(h, r, c, current_player)
+                 val = self._minimax_memo(board_list, depth - 1, not is_max, alpha, beta, h2, table)
+                 board_list[r][c] = EMPTY # Undo move
 
-    def _check_board_winner(self, board):
-        """Checks if there is a winner currently on the board."""
-        for r in range(SIZE):
-            for c in range(SIZE):
-                player = board[r][c]
-                if player != EMPTY:
-                    # If check_win confirms a win starting from (c, r) for this player
-                    if check_win(board, player, c, r):
-                        return player # Return the winner (AI or PLAYER)
-        return EMPTY # No winner found
+                 if is_max:
+                     best_val = max(best_val, val)
+                     alpha = max(alpha, best_val)
+                 else:
+                     best_val = min(best_val, val)
+                     beta = min(beta, best_val)
 
-    def _generate_moves(self, board, player_to_move):
-        """
-        Generates potential moves, focusing on squares near existing pieces.
-        """
+                 if beta <= alpha: break # Prune
+
+        table[key] = best_val
+        return best_val
+
+    def _order_minimax_moves(self, board_list, moves, player, is_max):
+        """Score moves for ordering within minimax recursion."""
+        scored = []
+        temp_board_arr = np.array(board_list, dtype=np.int8)
+        for r_mm, c_mm in moves:
+             if temp_board_arr[r_mm, c_mm] == EMPTY:
+                  temp_board_arr[r_mm, c_mm] = player
+                  # Use static evaluation for ordering
+                  sc_mm = self._evaluate_board(temp_board_arr, AI) # Always from AI perspective
+                  temp_board_arr[r_mm, c_mm] = EMPTY
+                  scored.append(((r_mm, c_mm), sc_mm))
+        # Max player explores high scores first, Min player explores low scores first
+        scored.sort(key=lambda x: x[1], reverse=is_max)
+        # Limit branching factor? Maybe only take top N moves?
+        # max_branch = 15 + (3 - min(self.depth, 3)) * 5 # Fewer branches deeper?
+        # return [mv for mv, _ in scored[:max_branch]]
+        return [mv for mv, _ in scored]
+
+
+    def _generate_moves(self, board_list, player_to_move):
+        """Generates potential moves near existing pieces."""
         moves = set()
         has_piece = False
-        radius = 1 # Consider neighbors within 1 step distance
+        radius = 1 # Check immediate neighbors
 
-        # Check for existing pieces and add neighbors
         for r in range(SIZE):
             for c in range(SIZE):
-                if board[r][c]!=EMPTY:
+                if board_list[r][c] != EMPTY:
                     has_piece = True
-                    # Add empty neighbors around this piece
-                    for dr in range(-radius, radius+1):
-                        for dc in range(-radius, radius+1):
-                            if dr==0 and dc==0: continue
-                            nr, nc = r+dr, c+dc
-                            # Check bounds and if the neighbor spot is empty
-                            if 0 <= nr < SIZE and 0 <= nc < SIZE and board[nr][nc]==EMPTY:
-                                moves.add((nr,nc))
+                    for dr in range(-radius, radius + 1):
+                        for dc in range(-radius, radius + 1):
+                            if dr == 0 and dc == 0: continue
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < SIZE and 0 <= nc < SIZE and board_list[nr][nc] == EMPTY:
+                                moves.add((nr, nc))
 
-        # If the board is empty, play in the center
-        if not has_piece:
-            mid = SIZE//2
-            return [(mid,mid)]
-
-        # If no neighbors found (e.g., board full), return all empty cells (shouldn't normally happen mid-game)
-        if not moves:
-             return [(r,c) for r in range(SIZE) for c in range(SIZE) if board[r][c]==EMPTY]
-
+        if not has_piece: return [(SIZE // 2, SIZE // 2)] # Play center if empty
+        if not moves: # If no neighbors (near full board), find any empty
+            empty_spots = []
+            for r in range(SIZE):
+                for c in range(SIZE):
+                    if board_list[r][c] == EMPTY: empty_spots.append((r,c))
+            return empty_spots
         return list(moves)
 
-    def _evaluate_board(self, board, who):
-        """
-        Evaluates the board state from the perspective of 'who' (usually AI).
-        Positive score favors AI, negative favors Player.
-        """
-        # Calculate score for AI and Player separately
-        my_score    = self._calculate_player_score(board, AI)
-        oppo_score  = self._calculate_player_score(board, PLAYER)
+    def _evaluate_board(self, board_arr: np.ndarray, who: np.int8) -> float:
+        """Evaluates board state from AI's perspective using Numba."""
+        my_score = _calculate_player_score_numba(
+            board_arr, AI, PLAYER, SIZE, *self.score_constants
+        )
+        oppo_score = _calculate_player_score_numba(
+            board_arr, PLAYER, AI, SIZE, *self.score_constants
+        )
 
-        # Check for immediate win conditions (already handled by FIVE score, but can be explicit)
-        if my_score   >= SCORE["FIVE"]: return SCORE["FIVE"] * 10 # Strong win signal
-        if oppo_score >= SCORE["FIVE"]: return -SCORE["FIVE"] * 10 # Strong loss signal
+        # Check for win conditions detected by scoring
+        # Multiply by large factor to dominate simple scores
+        if my_score >= SCORE_FIVE: return SCORE_FIVE * 10
+        if oppo_score >= SCORE_FIVE: return -SCORE_FIVE * 10
 
-        # Return AI score minus opponent score (opponent score weighted slightly higher)
-        # This encourages both advancing AI's position and blocking the player.
-        return my_score - oppo_score * 1.1
-
-    def _calculate_player_score(self, board, player):
-        """Calculates the total score for a given player based on patterns."""
-        total_score = 0
-        opponent = PLAYER if player == AI else AI
-
-        # --- Evaluate all lines: Rows, Columns, Diagonals ---
-        lines = []
-        # Rows
-        for r in range(SIZE):
-            lines.append(board[r])
-        # Columns
-        for c in range(SIZE):
-            lines.append([board[r][c] for r in range(SIZE)])
-        # Diagonals (top-left to bottom-right)
-        for i in range(-(SIZE - 5), SIZE - 4): # Optimized range for length >= 5
-            line = []
-            for j in range(SIZE):
-                r, c = j, j + i
-                if 0 <= r < SIZE and 0 <= c < SIZE:
-                    line.append(board[r][c])
-            if len(line) >= 5: lines.append(line)
-        # Diagonals (top-right to bottom-left)
-        for i in range(4, SIZE * 2 - 5): # Optimized range for length >= 5
-            line = []
-            for j in range(SIZE):
-                r, c = j, i - j
-                if 0 <= r < SIZE and 0 <= c < SIZE:
-                    line.append(board[r][c])
-            if len(line) >= 5: lines.append(line)
-
-        # Evaluate each line for the player's patterns
-        for line in lines:
-            total_score += self._evaluate_line(line, player, opponent)
-
-        return total_score
-
-    def _evaluate_line(self, line, player, opponent):
-        """Evaluates a single line (list) for the given player's patterns."""
-        score = 0
-        n = len(line)
-        i = 0
-        while i < n:
-            # Find consecutive streaks of the player's pieces
-            if line[i] == player:
-                count = 0
-                while i < n and line[i] == player:
-                    count += 1
-                    i += 1
-                # After the streak, check open ends
-                left_open = (i - count > 0 and line[i - count - 1] == EMPTY)
-                right_open = (i < n and line[i] == EMPTY)
-                open_ends = (1 if left_open else 0) + (1 if right_open else 0)
-                score += self._score_pattern(count, open_ends)
-            else:
-                i += 1
-
-        # --- Add checks for specific broken patterns (like P E P P, P P E P) ---
-        # This part can significantly improve evaluation accuracy but adds complexity.
-        # Example for P E P P -> Sleep Three potential
-        for j in range(n - 3):
-            if tuple(line[j:j+4]) == (player, EMPTY, player, player):
-                 # Check ends for openness
-                 left_empty = (j > 0 and line[j-1] == EMPTY)
-                 right_empty = (j + 4 < n and line[j+4] == EMPTY)
-                 if left_empty and right_empty:
-                      score += SCORE["LIVE_THREE"] * 0.8 # High potential, slightly less than pure live three
-                 elif left_empty or right_empty:
-                      score += SCORE["SLEEP_THREE"] # Standard sleep three
-
-        # Example for P P E P -> Sleep Three potential
-        for j in range(n - 3):
-            if tuple(line[j:j+4]) == (player, player, EMPTY, player):
-                 left_empty = (j > 0 and line[j-1] == EMPTY)
-                 right_empty = (j + 4 < n and line[j+4] == EMPTY)
-                 if left_empty and right_empty:
-                      score += SCORE["LIVE_THREE"] * 0.8
-                 elif left_empty or right_empty:
-                      score += SCORE["SLEEP_THREE"]
-
-        # Add more patterns if needed (e.g., P E E P P, etc.)
-
-        return score
+        # Return AI score minus weighted opponent score
+        return float(my_score - oppo_score * 1.1) # Weight blocking slightly
 
 
-    def _score_pattern(self, count, open_ends):
-        """Assigns score based on piece count and open ends."""
-        if count >= 5:
-            return SCORE["FIVE"]
-
-        # If both ends are blocked, the pattern is dead (unless it's already >= 5)
-        if open_ends == 0 and count < 5:
-            return 0
-
-        # Score based on count and openness
-        if count == 4:
-            if open_ends == 2: return SCORE["LIVE_FOUR"]
-            if open_ends == 1: return SCORE["RUSH_FOUR"]
-        if count == 3:
-            if open_ends == 2: return SCORE["LIVE_THREE"]
-            if open_ends == 1: return SCORE["SLEEP_THREE"]
-        if count == 2:
-            if open_ends == 2: return SCORE["LIVE_TWO"]
-            if open_ends == 1: return SCORE["SLEEP_TWO"]
-        # Optional: score for single pieces (usually low value)
-        # if count == 1:
-        #    if open_ends == 2: return 10 # e.g., LIVE_ONE
-        #    if open_ends == 1: return 1  # e.g., SLEEP_ONE
-
-        return 0 # Default for counts < 2 or unhandled cases
-
-
-# --- Flask 路由 ---
+# --- Flask Routes ---
 @app.route('/', methods=['GET'])
 def index():
-    # Serve the main HTML file from the base directory
     return send_from_directory(BASE_DIR, 'index.html')
 
 @app.route('/ai_move', methods=['POST'])
@@ -492,67 +434,93 @@ def get_ai_move():
     if 'board' not in data or 'depth' not in data:
         return jsonify({"error":"Missing 'board' or 'depth' parameter"}), 400
 
-    board = data['board']
+    board_list = data['board']
     depth = int(data['depth'])
-    # Use 'threads' from frontend, map to 'workers' internally
-    workers = int(data.get('threads', os.cpu_count() or 1))
+    workers = int(data.get('threads', os.cpu_count() or 1)) # Still use 'threads' key for backward compatibility
 
     # --- Input Validation ---
-    if not (1 <= depth <= 12): # Depth limit
-        return jsonify({"error":"Search depth (depth) must be between 1 and 12"}), 400
-    if not (1 <= workers <= (os.cpu_count() or 4) * 2): # More flexible worker limit, but warn if high
-         print(f"WARN: Requested workers ({workers}) exceeds typical recommendations.")
-        # return jsonify({"error":"Parallel workers (threads) must be between 1 and 100"}), 400 # Example limit
-    if not (isinstance(board, list) and len(board) == SIZE and
-            all(isinstance(row, list) and len(row) == SIZE for row in board) and
-            all(cell in [EMPTY, PLAYER, AI] for row in board for cell in row)):
-        return jsonify({"error":"Board format is invalid or contains illegal values"}), 400
+    # MODIFIED: Validate against new ranges (1-20 depth, 1-200 workers)
+    if not (1 <= depth <= 20):
+        return jsonify({"error": f"搜索深度 (depth) 必须在 1 到 20 之间"}), 400
+    if not (1 <= workers <= 200):
+         return jsonify({"error": f"并行工作单元 (threads) 必须在 1 到 200 之间"}), 400
+
+    # Print warning for potentially very long calculations
+    if depth > 5:
+         print(f"WARN: Requested depth {depth} on {SIZE}x{SIZE} board may take a very long time!")
+
+    # Validate board structure and values (SIZE=30)
+    try:
+        if not (isinstance(board_list, list) and len(board_list) == SIZE and
+                all(isinstance(row, list) and len(row) == SIZE for row in board_list) and
+                all(cell in [int(EMPTY), int(PLAYER), int(AI)] for row in board_list for cell in row)):
+            raise ValueError(f"Invalid board structure or cell values (expected {SIZE}x{SIZE})")
+    except ValueError as e:
+         return jsonify({"error": f"Board format is invalid: {e}"}), 400
 
     # --- Create AI instance and get move ---
-    print(f"Received request: depth={depth}, workers={workers}") # Log request details
-    ai = GomokuAI(board, depth, workers)
+    print(f"Received request: depth={depth}, workers={workers} (Numba Enabled, Board Size: {SIZE}x{SIZE})")
+    ai = GomokuAI(board_list, depth, workers)
     try:
-        move = ai.find_best_move() # This now handles the fixed multiprocessing
-        if move is None:
-             print("ERROR: AI failed to determine a move.")
-             # Provide a fallback move if AI returns None unexpectedly
-             # Find any empty cell
-             fallback_move = None
+        # Consider adding a timeout mechanism here for very long searches
+        move = ai.find_best_move()
+
+        if move is None or "error" in move:
+             # AI class should handle fallbacks, but catch potential None return
+             print("ERROR: AI find_best_move returned None or an error structure.")
+             err_msg = move.get("error", "AI failed to determine a move") if isinstance(move, dict) else "AI failed"
+             # Try one last time to find *any* empty spot as absolute fallback
+             final_fallback = None
              for r in range(SIZE):
                  for c in range(SIZE):
-                     if board[r][c] == EMPTY:
-                         fallback_move = {"x": c, "y": r}
+                     if board_list[r][c] == int(EMPTY):
+                         final_fallback = {"x": c, "y": r}
                          break
-                 if fallback_move: break
-             if fallback_move:
-                 return jsonify({"move": fallback_move, "warning": "AI failed, used fallback"})
-             else: # Board must be full?
-                 return jsonify({"error":"AI failed and no empty cells found (Draw?)"}), 500
+                 if final_fallback: break
+             if final_fallback:
+                  print("WARN: Using absolute fallback move.")
+                  return jsonify({"move": final_fallback, "warning": f"{err_msg}, used absolute fallback"})
+             else: # Truly no empty spots?
+                  return jsonify({"error": "AI failed and no empty cells found (Draw?)"}), 500
 
-        print(f"Sending move: {move}") # Log the move being sent
+        print(f"Sending move: {move}")
         return jsonify({"move": move})
 
     except Exception as e:
-        # Log the detailed error on the server side
         print("="*20 + " AI Calculation Error " + "="*20)
-        print(f"Request Data: depth={depth}, workers={workers}") # Board might be too large to log cleanly
-        # print(f"Board state: {board}") # Optional: log board if needed, can be large
-        traceback.print_exc() # Print full stack trace
+        print(f"Request Data: depth={depth}, workers={workers}, size={SIZE}")
+        traceback.print_exc()
         print("="*50)
-        # Return a generic error message to the client
-        return jsonify({"error": f"AI internal calculation error: {type(e).__name__}"}), 500
+        # Provide a more generic error message to the frontend
+        return jsonify({"error": f"AI internal calculation error. Check server logs."}), 500
 
 
-# --- 启动 ---
+# --- Startup ---
 if __name__=='__main__':
-    # Crucial for multiprocessing when frozen (e.g., with PyInstaller)
-    # Should be called early in the main entry point.
-    # Consider moving freeze_support() to main.py if that's the actual entry point.
-    # multiprocessing.freeze_support() # Usually needed in main.py's if __name__ == '__main__':
+    # freeze_support() should be in main.py if bundling
 
     port = 5000
-    print(f"=== Gomoku AI Server (Multiprocessing - Fixed) starting on port {port} ===")
+    print(f"=== Gomoku AI Server (Multiprocessing + Numba) starting on port {port} ===")
+    print(f"Board Size: {SIZE}x{SIZE}")
     print(f"Detected CPU cores: {os.cpu_count() or 'Unknown'}")
-    # Run with Flask's built-in server - disable debug and reloader for stability with multiprocessing
-    # threaded=False is important as ProcessPoolExecutor handles parallelism.
+    print(f"Numba available: {'Yes' if numba else 'No'}")
+
+    # Pre-compile Numba functions (optional, uses SIZE=30)
+    try:
+        print("Pre-compiling Numba functions (this might take a moment)...")
+        dummy_board_arr = np.zeros((SIZE, SIZE), dtype=np.int8)
+        dummy_line = np.zeros(SIZE, dtype=np.int8)
+        dummy_scores = (
+            SCORE_FIVE, SCORE_LIVE_FOUR, SCORE_RUSH_FOUR, SCORE_LIVE_THREE,
+            SCORE_SLEEP_THREE, SCORE_LIVE_TWO, SCORE_SLEEP_TWO
+        )
+        _check_win_numba(dummy_board_arr, PLAYER, SIZE//2, SIZE//2, SIZE)
+        _score_pattern_numba(3, 2, *dummy_scores)
+        _evaluate_line_numba(dummy_line, PLAYER, AI, *dummy_scores)
+        _calculate_player_score_numba(dummy_board_arr, PLAYER, AI, SIZE, *dummy_scores)
+        print("Numba pre-compilation finished.")
+    except Exception as e:
+        print(f"Numba pre-compilation failed (will compile on first use): {e}")
+
+    # Run Flask server
     app.run(host='127.0.0.1', port=port, debug=False, threaded=False, use_reloader=False)
