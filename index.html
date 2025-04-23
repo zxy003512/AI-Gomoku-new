@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
-<title>ZXY算法五子棋</title>
+<title>ZXY 算法五子棋</title>
 <style>
   body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -10,7 +10,7 @@
     flex-direction: column;
     align-items: center;
     padding: 10px;
-    background-color: #f0f0e0; /* Slightly warmer background */
+    background-color: #f0f0e0;
   }
   h1 {
     color: #333;
@@ -18,61 +18,57 @@
   }
   .game-container {
     display: flex;
-    flex-wrap: wrap; /* Allow wrapping on smaller screens */
+    flex-wrap: wrap;
     justify-content: center;
-    align-items: flex-start; /* Align items to the top */
-    gap: 20px; /* Space between board and controls */
+    align-items: flex-start;
+    gap: 20px;
     width: 100%;
-    max-width: 1200px; /* Max width adjusted for larger board */
+    max-width: 1200px;
   }
   .canvas-container {
-      display: inline-block; /* Keep canvas inline */
-      position: relative; /* Needed for absolute positioning of last move marker */
-      /* Adjust container size if needed, or let canvas dictate */
-      /* width: 804px; */ /* Canvas width + border */
-      /* height: 804px; */ /* Canvas height + border */
+    display: inline-block;
+    position: relative;
   }
   canvas {
-      border: 2px solid #5a3d2b; /* Darker wood border */
-      cursor: pointer;
-      display: block;
-      background-color: #e3c16f; /* Lighter wood board color */
-      box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    border: 2px solid #5a3d2b;
+    cursor: pointer;
+    display: block;
+    background-color: #e3c16f;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
   }
   .controls-panel {
     display: flex;
-    flex-direction: column; /* Stack controls vertically */
-    gap: 15px; /* Space between control groups */
+    flex-direction: column;
+    gap: 15px;
     padding: 15px;
     background-color: #fff;
     border: 1px solid #ddd;
     border-radius: 8px;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    min-width: 250px; /* Minimum width for the panel */
-    max-width: 300px; /* Max width for controls */
+    min-width: 250px;
+    max-width: 300px;
   }
   .control-group {
     display: flex;
-    flex-direction: column; /* Label above input */
-    align-items: flex-start; /* Align label left */
+    flex-direction: column;
+    align-items: flex-start;
     gap: 5px;
   }
   .control-group label {
     font-weight: bold;
     color: #555;
-    margin-bottom: 2px;
   }
-   .control-group input[type="number"] {
-     width: 80px; /* Slightly wider input */
-     padding: 8px;
-     border: 1px solid #ccc;
-     border-radius: 4px;
-     font-size: 1em;
-   }
-   .control-group span {
-     font-size: 0.85em;
-     color: #777;
-   }
+  .control-group input[type="number"] {
+    width: 80px;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 1em;
+  }
+  .control-group span {
+    font-size: 0.85em;
+    color: #777;
+  }
   .settings-actions button {
     padding: 8px 15px;
     cursor: pointer;
@@ -83,45 +79,43 @@
     font-size: 0.9em;
     transition: background-color 0.2s ease;
   }
-   .settings-actions button:hover {
-     background-color: #0056b3;
-   }
+  .settings-actions button:hover {
+    background-color: #0056b3;
+  }
   #validation-error {
-    color: #dc3545; /* Bootstrap danger color */
+    color: #dc3545;
     font-size: 0.85em;
     min-height: 1.2em;
     margin-top: 5px;
   }
-
   #status {
     margin-top: 15px;
-    font-size: 1.2em; /* Slightly smaller for potentially longer messages */
+    font-size: 1.2em;
     font-weight: bold;
     min-height: 1.5em;
     color: #333;
     transition: color 0.3s ease;
-    word-wrap: break-word; /* Wrap long status messages */
+    word-wrap: break-word;
   }
   #status.thinking {
-     color: #fd7e14; /* Orange color when thinking */
+    color: #fd7e14;
   }
   .thinking-indicator {
     display: inline-block;
     margin-left: 5px;
     font-style: italic;
     color: #555;
-    /* Basic animation */
     animation: blink 1.5s linear infinite;
   }
   @keyframes blink {
-    0%, 100% { opacity: 1; }
+    0%,100% { opacity: 1; }
     50% { opacity: 0.5; }
   }
-
   .game-buttons {
-      margin-top: 15px;
-      display: flex;
-      gap: 10px; /* Space between buttons */
+    margin-top: 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
   }
   .game-buttons button {
     padding: 10px 20px;
@@ -131,401 +125,341 @@
     border: none;
     transition: background-color 0.2s ease, box-shadow 0.2s ease;
   }
-  .game-buttons button:first-child { /* Restart Button */
-    background-color: #28a745; /* Green */
-    color: white;
-  }
-  .game-buttons button:first-child:hover {
-    background-color: #218838;
+  .game-buttons button:hover {
     box-shadow: 0 2px 5px rgba(0,0,0,0.2);
   }
-  .game-buttons button:last-child { /* AI First Button */
-    background-color: #ffc107; /* Yellow */
-    color: #333;
-  }
-   .game-buttons button:last-child:hover {
-    background-color: #e0a800;
-    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-  }
+  .game-buttons .btn-reset { background-color: #28a745; color: white; }
+  .game-buttons .btn-reset:hover { background-color: #218838; }
+  .game-buttons .btn-ai-first { background-color: #ffc107; color: #333; }
+  .game-buttons .btn-ai-first:hover { background-color: #e0a800; }
+  .game-buttons .btn-ai-vs-ai { background-color: #17a2b8; color: white; }
+  .game-buttons .btn-ai-vs-ai:hover { background-color: #117a8b; }
 
-  /* Style for AI's last move marker */
   .last-move-marker {
-      position: absolute;
-      border: 2px solid #ff0000; /* Bright red border */
-      box-sizing: border-box; /* Include border in size */
-      pointer-events: none; /* Don't interfere with clicks */
-      border-radius: 3px; /* Slightly rounded corners */
-      box-shadow: 0 0 5px rgba(255, 0, 0, 0.7);
-      transition: all 0.2s ease-out; /* Smooth appearance */
-      z-index: 10; /* Ensure it's above pieces */
+    position: absolute;
+    border: 2px solid #ff0000;
+    box-sizing: border-box;
+    pointer-events: none;
+    border-radius: 3px;
+    box-shadow: 0 0 5px rgba(255,0,0,0.7);
+    transition: all 0.2s ease-out;
+    z-index: 10;
   }
-
 </style>
 </head>
 <body>
-<h1>ZXY算法五子棋</h1>
+<h1>ZXY 算法五子棋</h1>
 
 <div class="game-container">
-    <div class="canvas-container">
-        <canvas id="board" width="800" height="800"></canvas>
-        <div id="lastMoveMarker" class="last-move-marker" style="display: none;"></div>
-    </div>
+  <div class="canvas-container">
+    <canvas id="board" width="800" height="800"></canvas>
+    <div id="lastMoveMarker" class="last-move-marker" style="display:none;"></div>
+  </div>
 
-    <div class="controls-panel">
-        <div class="control-group">
-            <label for="depthInput">搜索深度:</label>
-            <!-- 改为 max=16 -->
-            <input type="number" id="depthInput" min="1" max="16" value="3">
-            <span>(1-16, 推荐 4-8, 更高会很慢)</span>
-        </div>
-        <div class="control-group">
-            <label for="workersInput">并行工作单元:</label>
-            <!-- 改为 max=32 -->
-            <input type="number" id="workersInput" min="1" max="32" value="4">
-            <span>(1-32, 推荐 CPU 核心数)</span>
-        </div>
-        <div class="settings-actions">
-            <button id="applySettingsBtn" onclick="applySettings()">应用设置</button>
-            <div id="validation-error"></div>
-        </div>
-
-         <div id="status">您的回合<span class="thinking-indicator" style="display: none;"> (AI 思考中...)</span></div>
-         <div class="game-buttons">
-             <button onclick="resetGame()">重新开始</button>
-             <button onclick="aiFirst()">AI 先手</button>
-         </div>
+  <div class="controls-panel">
+    <!-- 黑方 AI 深度（仅 AI vs AI 时生效） -->
+    <div class="control-group">
+      <label for="depthInput1">黑方 AI 搜索深度：</label>
+      <input type="number" id="depthInput1" min="1" max="16" value="3">
+      <span>(1-16，AI vs AI 时黑方使用)</span>
     </div>
+    <!-- 红方 AI 深度 / 玩家 VS AI 时使用 -->
+    <div class="control-group">
+      <label for="depthInput2">红方 AI 搜索深度：</label>
+      <input type="number" id="depthInput2" min="1" max="16" value="3">
+      <span>(1-16，玩家 VS AI 或 AI vs AI 红方使用)</span>
+    </div>
+    <div class="control-group">
+      <label for="workersInput">并行工作单元：</label>
+      <input type="number" id="workersInput" min="1" max="32" value="4">
+      <span>(1-32，推荐 CPU 核心数)</span>
+    </div>
+    <div class="settings-actions">
+      <button id="applySettingsBtn" onclick="applySettings()">应用设置</button>
+      <div id="validation-error"></div>
+    </div>
+    <div id="status">游戏开始，您的回合<span class="thinking-indicator" style="display:none;"> (AI 思考中...)</span></div>
+    <div class="game-buttons">
+      <button class="btn-reset" onclick="resetGame()">重新开始</button>
+      <button class="btn-ai-first" onclick="aiFirst()">AI 先手</button>
+      <button class="btn-ai-vs-ai" onclick="startAiVsAi()">AI vs AI</button>
+    </div>
+  </div>
 </div>
-
 
 <script>
 const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
 const lastMoveMarker = document.getElementById('lastMoveMarker');
-const N = 20; // <<--- Board size (MUST MATCH SERVER: 20)
-const cell = canvas.width / N; // Cell size recalculated (800/20 = 40)
+const N = 20;
+const cell = canvas.width / N;
 
-let board = Array.from({ length: N }, () => Array(N).fill(0)); // 0: Empty, 1: Player (Black), 2: AI (Red)
+let board = Array.from({length:N}, ()=>Array(N).fill(0));
 let gameOver = false;
 let playerTurn = true;
-let lastAiMove = null; // Store AI's last move {x, y}
-let aiThinking = false; // Flag to prevent clicks during AI turn
+let aiThinking = false;
+let lastAiMove = null;
 
-// --- Initial settings ---
-let currentDepth = 3;  // Default AI search depth (Lower for 20x20)
-let currentThreads = 4; // Default number of parallel workers
-// Try to get CPU core count for default, fallback to 4
-try {
-    currentThreads = navigator.hardwareConcurrency || 4;
-    // Clamp threads to a reasonable maximum like 32 for the input field
-    currentThreads = Math.min(currentThreads, 32);
-} catch (e) {
-    console.warn("Could not detect CPU core count.");
-    currentThreads = 4;
-}
+// AI vs AI 相关
+let aiVsAi = false;       // 是否在自动对战模式
+let aiVsAiSide = 0;       // 0 = 黑方, 1 = 红方
 
+// 当前设置
+let currentDepthBlack = 3;
+let currentDepthRed = 3;
+let currentThreads = navigator.hardwareConcurrency ? Math.min(navigator.hardwareConcurrency,32) : 4;
 
-const API = 'http://127.0.0.1:5000/ai_move'; // Backend API endpoint
+const API = 'http://127.0.0.1:5000/ai_move';
 
-// --- Drawing ---
-function drawBoard() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear canvas
-
-  // Draw grid lines
-  ctx.strokeStyle = '#6b4f3a'; // Darker grid lines
+// --- 绘制 ---
+function drawBoard(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // 线
+  ctx.strokeStyle = '#6b4f3a';
   ctx.lineWidth = 1;
-
   ctx.beginPath();
-  for (let i = 0; i < N; i++) {
-    const pos = cell / 2 + i * cell;
-    // Horizontal
-    ctx.moveTo(cell / 2, pos);
-    ctx.lineTo(canvas.width - cell / 2, pos);
-    // Vertical
-    ctx.moveTo(pos, cell / 2);
-    ctx.lineTo(pos, canvas.height - cell / 2);
+  for(let i=0;i<N;i++){
+    let pos = cell/2 + i*cell;
+    ctx.moveTo(cell/2,pos);
+    ctx.lineTo(canvas.width-cell/2,pos);
+    ctx.moveTo(pos,cell/2);
+    ctx.lineTo(pos,canvas.height-cell/2);
   }
   ctx.stroke();
-
-  // Draw star points (adjusted for 20x20)
-  // Common points: (3,3), (16,3), (3,16), (16,16), (9,9)
-  const starPoints = [ [3, 3], [16, 3], [3, 16], [16, 16], [9, 9],
-                       [3, 9], [9, 3], [16, 9], [9, 16] ]; // Add edge center stars for 20x20
-
-  ctx.fillStyle = '#333';
-  starPoints.forEach(p => {
-    // Check bounds just in case N changes later
-    if (p[0] >= 0 && p[0] < N && p[1] >= 0 && p[1] < N) {
-        ctx.beginPath();
-        ctx.arc(cell / 2 + p[0] * cell, cell / 2 + p[1] * cell, cell * 0.1, 0, 2 * Math.PI); // Smaller star points
-        ctx.fill();
+  // 星位
+  const starPoints = [[3,3],[16,3],[3,16],[16,16],[9,9],[3,9],[9,3],[16,9],[9,16]];
+  ctx.fillStyle='#333';
+  for(let p of starPoints){
+    if(p[0]>=0&&p[0]<N&&p[1]>=0&&p[1]<N){
+      ctx.beginPath();
+      let x=cell/2+p[0]*cell, y=cell/2+p[1]*cell;
+      ctx.arc(x,y,cell*0.1,0,2*Math.PI);
+      ctx.fill();
     }
-  });
-
-  // Draw pieces
-  for (let y = 0; y < N; y++) {
-    for (let x = 0; x < N; x++) {
-      if (board[y][x]) {
+  }
+  // 棋子
+  for(let y=0;y<N;y++){
+    for(let x=0;x<N;x++){
+      if(board[y][x]){
         ctx.beginPath();
-        const pieceX = cell / 2 + x * cell;
-        const pieceY = cell / 2 + y * cell;
-        const radius = cell * 0.45; // Piece radius relative to cell size
-
-        // Create gradient for pieces
-        const gradient = ctx.createRadialGradient(pieceX - radius * 0.3, pieceY - radius * 0.3, radius * 0.1, pieceX, pieceY, radius);
-        if (board[y][x] === 1) { // Player (Black)
-             gradient.addColorStop(0, '#666');
-             gradient.addColorStop(0.8, '#000');
-             gradient.addColorStop(1, '#000');
-        } else { // AI (Red)
-             gradient.addColorStop(0, '#ff7f7f'); // Lighter red highlight
-             gradient.addColorStop(0.8, '#D80000'); // Main red
-             gradient.addColorStop(1, '#A00000'); // Darker edge
+        let px=cell/2+x*cell, py=cell/2+y*cell, r=cell*0.45;
+        let grad = ctx.createRadialGradient(px-r*0.3,py-r*0.3,r*0.1,px,py,r);
+        if(board[y][x]===1){
+          grad.addColorStop(0,'#666'); grad.addColorStop(0.8,'#000'); grad.addColorStop(1,'#000');
+        } else {
+          grad.addColorStop(0,'#ff7f7f'); grad.addColorStop(0.8,'#D80000'); grad.addColorStop(1,'#A00000');
         }
-
-        ctx.fillStyle = gradient;
-        ctx.arc(pieceX, pieceY, radius, 0, 2 * Math.PI);
+        ctx.fillStyle = grad;
+        ctx.arc(px,py,r,0,2*Math.PI);
         ctx.fill();
       }
     }
   }
-
-  // Draw AI's last move marker
-  if (lastAiMove && !gameOver) { // Only show marker if game is ongoing
-      const markerSize = cell * 0.85; // Marker size slightly smaller than cell
-      const markerX = lastAiMove.x * cell + (cell - markerSize) / 2;
-      const markerY = lastAiMove.y * cell + (cell - markerSize) / 2;
-      lastMoveMarker.style.left = `${markerX}px`;
-      lastMoveMarker.style.top = `${markerY}px`;
-      lastMoveMarker.style.width = `${markerSize}px`;
-      lastMoveMarker.style.height = `${markerSize}px`;
-      lastMoveMarker.style.display = 'block';
+  // 上次落子标记
+  if(lastAiMove && !gameOver){
+    let ms = cell*0.85;
+    let mx = lastAiMove.x*cell + (cell-ms)/2;
+    let my = lastAiMove.y*cell + (cell-ms)/2;
+    lastMoveMarker.style.left = mx+'px';
+    lastMoveMarker.style.top  = my+'px';
+    lastMoveMarker.style.width = ms+'px';
+    lastMoveMarker.style.height= ms+'px';
+    lastMoveMarker.style.display='block';
   } else {
-      lastMoveMarker.style.display = 'none';
+    lastMoveMarker.style.display='none';
   }
 }
 
-// --- Game Logic ---
-function checkWinClient(x, y, player) {
-  if (x < 0 || y < 0 || x >= N || y >= N || !board[y] || board[y][x] !== player) return false;
-  const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
-  for (let [dx, dy] of dirs) {
-    let count = 1;
-    for (let i = 1; i < 5; i++) {
-      let nx = x + i * dx;
-      let ny = y + i * dy;
-      if (nx < 0 || ny < 0 || nx >= N || ny >= N || !board[ny] || board[ny][nx] !== player) break;
-      count++;
+// --- 客户端胜负检测 ---
+function checkWinClient(x,y,p){
+  const dirs=[[1,0],[0,1],[1,1],[1,-1]];
+  for(let [dx,dy] of dirs){
+    let cnt=1;
+    for(let i=1;i<5;i++){
+      let nx=x+dx*i, ny=y+dy*i;
+      if(nx<0||ny<0||nx>=N||ny>=N||board[ny][nx]!==p) break;
+      cnt++;
     }
-    for (let i = 1; i < 5; i++) {
-      let nx = x - i * dx;
-      let ny = y - i * dy;
-      if (nx < 0 || ny < 0 || nx >= N || ny >= N || !board[ny] || board[ny][nx] !== player) break;
-      count++;
+    for(let i=1;i<5;i++){
+      let nx=x-dx*i, ny=y-dy*i;
+      if(nx<0||ny<0||nx>=N||ny>=N||board[ny][nx]!==p) break;
+      cnt++;
     }
-    if (count >= 5) return true;
+    if(cnt>=5) return true;
   }
   return false;
 }
+function isFull(){ return board.every(r=>r.every(c=>c!==0)); }
 
-function isFull() {
-  return board.every(row => row.every(cellVal => cellVal !== 0));
-}
-
-// --- Event Handlers ---
-canvas.addEventListener('click', e => {
-  if (gameOver || !playerTurn || aiThinking) return;
-
-  let rect = canvas.getBoundingClientRect();
-  let scaleX = canvas.width / rect.width;
-  let scaleY = canvas.height / rect.height;
-  let canvasX = (e.clientX - rect.left) * scaleX;
-  let canvasY = (e.clientY - rect.top) * scaleY;
-  let x = Math.floor(canvasX / cell);
-  let y = Math.floor(canvasY / cell);
-
-  if (x < 0 || y < 0 || x >= N || y >= N || !board[y] || board[y][x] !== 0) return;
-
-  board[y][x] = 1; // Player = 1
-  lastAiMove = null;
-  drawBoard();
-
-  if (checkWinClient(x, y, 1)) {
-    setStatus('恭喜你赢了！🎉');
-    gameOver = true;
-    return;
-  }
-  if (isFull()) {
-    setStatus('平局！🤝');
-    gameOver = true;
-    return;
-  }
-
-  playerTurn = false;
-  aiThinking = true;
-  setStatus('AI 思考中...', true);
-  requestAnimationFrame(() => {
-       setTimeout(requestAiMove, 50);
-   });
-});
-
-async function requestAiMove() {
-  if (gameOver) { aiThinking = false; return; }
-
-  try {
-    setStatus('AI 思考中...', true);
-    const startTime = performance.now();
-
-    let response = await fetch(API, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({ board: board, depth: currentDepth, threads: currentThreads })
-    });
-
-    let responseText = await response.text();
-    const endTime = performance.now();
-    const duration = ((endTime - startTime)/1000).toFixed(2);
-
-    if (!response.ok) {
-        let errorMsg = `AI 服务器错误 ${response.status}`;
-        try {
-            let errorData = JSON.parse(responseText);
-            errorMsg = `AI 错误: ${errorData.error || errorMsg}`;
-        } catch {}
-        setStatus(errorMsg);
-        playerTurn = true; aiThinking = false;
-        return;
-    }
-
-    let data;
-    try {
-        data = JSON.parse(responseText);
-    } catch {
-        setStatus(`AI 错误: 无法解析服务器响应`);
-        playerTurn = true; aiThinking = false;
-        return;
-    }
-
-    if (data.error) {
-      setStatus(`AI 计算错误: ${data.error}`);
-      playerTurn = true; aiThinking = false;
-      return;
-    }
-
-    if (data.move && data.move.x !== undefined && data.move.y !== undefined) {
-        let { x, y } = data.move;
-        if (x>=0&&y>=0&&x<N&&y<N&&board[y][x]===0) {
-            board[y][x] = 2;
-            lastAiMove = { x, y };
-            drawBoard();
-            if (checkWinClient(x,y,2)) {
-                 setStatus(`AI 赢了！🤖 (思考 ${duration}s)`);
-                 gameOver = true; aiThinking = false; return;
-            }
-            if (isFull()) {
-                 setStatus('平局！🤝');
-                 gameOver = true; aiThinking = false; return;
-             }
-            playerTurn = true; aiThinking = false;
-            setStatus(`您的回合 (AI 耗时 ${duration}s)`);
-        } else {
-            setStatus('AI 返回了无效的移动！请检查服务器日志。');
-            playerTurn = true; aiThinking = false;
-        }
-    } else {
-         setStatus('AI 未能返回有效移动格式！');
-         playerTurn = true; aiThinking = false;
-    }
-  } catch (err) {
-    setStatus('无法连接到 AI 服务器！请检查服务器是否运行且网络正常。');
-    playerTurn = true; aiThinking = false;
-  } finally {
-       if (!gameOver && playerTurn) {
-           const st = document.getElementById('status');
-           st.childNodes[0].nodeValue = st.childNodes[0].nodeValue.replace(/\(AI 思考中...\)/,'').trim() + ' ';
-           st.classList.remove('thinking');
-       }
-       aiThinking = false;
-  }
-}
-
-// --- UI Updates ---
-function setStatus(msg, thinking = false) {
+// --- 状态更新 ---
+function setStatus(msg, thinking=false){
   const st = document.getElementById('status');
-  const thinkingIndicator = st.querySelector('.thinking-indicator');
+  const ind = st.querySelector('.thinking-indicator');
   st.childNodes[0].nodeValue = msg + ' ';
-  if (thinkingIndicator) {
-       thinkingIndicator.style.display = thinking ? 'inline' : 'none';
-  }
+  if(ind) ind.style.display = thinking?'inline':'none';
   st.classList.toggle('thinking', thinking);
 }
 
-// --- Game Controls ---
-function resetGame() {
-  board = Array.from({ length: N }, () => Array(N).fill(0));
-  gameOver = false; playerTurn = true; aiThinking = false; lastAiMove = null;
+// --- 人机点击落子 ---
+canvas.addEventListener('click', e=>{
+  if(gameOver||!playerTurn||aiThinking||aiVsAi) return;
+  let r = canvas.getBoundingClientRect();
+  let x = Math.floor((e.clientX-r.left)*(canvas.width/r.width)/cell);
+  let y = Math.floor((e.clientY-r.top)*(canvas.height/r.height)/cell);
+  if(x<0||y<0||x>=N||y>=N||board[y][x]!==0) return;
+  board[y][x]=1;
+  lastAiMove=null; drawBoard();
+  if(checkWinClient(x,y,1)){ setStatus('恭喜你赢了！🎉'); gameOver=true; return; }
+  if(isFull()){ setStatus('平局！🤝'); gameOver=true; return; }
+  // 轮到 AI（红方）
+  playerTurn=false; aiThinking=true;
+  setStatus('AI 思考中...', true);
+  setTimeout(requestAiMove,50);
+});
+
+// --- 向服务端请求 AI 落子（玩家 VS AI 模式，红方 AI）---
+async function requestAiMove(){
+  if(gameOver){ aiThinking=false; return; }
+  try {
+    setStatus('AI 思考中...', true);
+    let start=performance.now();
+    let res = await fetch(API,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        board: board,
+        depth: currentDepthRed,
+        threads: currentThreads
+      })
+    });
+    let text = await res.text();
+    let dt = performance.now();
+    let cost = ((dt-start)/1000).toFixed(2);
+    if(!res.ok){
+      let err = `AI 服务错误 ${res.status}`;
+      try{ let o=JSON.parse(text); err=`AI 错误: ${o.error||err}` }catch{}
+      setStatus(err); playerTurn=true; aiThinking=false; return;
+    }
+    let obj = JSON.parse(text);
+    if(obj.error){
+      setStatus(`AI 计算错误: ${obj.error}`); playerTurn=true; aiThinking=false; return;
+    }
+    let mv = obj.move;
+    if(mv&&mv.x>=0&&mv.y>=0&&mv.x<N&&mv.y<N&&board[mv.y][mv.x]===0){
+      board[mv.y][mv.x]=2;
+      lastAiMove={x:mv.x,y:mv.y};
+      drawBoard();
+      if(checkWinClient(mv.x,mv.y,2)){
+        setStatus(`AI 赢了！🤖 (耗时 ${cost}s)`); gameOver=true; aiThinking=false; return;
+      }
+      if(isFull()){ setStatus('平局！🤝'); gameOver=true; aiThinking=false; return; }
+      playerTurn=true; aiThinking=false;
+      setStatus(`您的回合 (AI 耗时 ${cost}s)`);
+    } else {
+      setStatus('AI 返回了无效的移动！'); playerTurn=true; aiThinking=false;
+    }
+  } catch(err){
+    setStatus('无法连接到 AI 服务！'); playerTurn=true; aiThinking=false;
+  }
+}
+
+// --- AI vs AI 模式 ---
+async function aiVsAiStep(){
+  if(gameOver) return;
+  aiThinking = true;
+  let side = aiVsAiSide;          // 0 黑, 1 红
+  let depth = side===0 ? currentDepthBlack : currentDepthRed;
+  setStatus(`AI vs AI：${side===0?'黑方':'红方'}思考中…`, true);
+  try {
+    let res = await fetch(API,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        board: board,
+        depth: depth,
+        threads: currentThreads
+      })
+    });
+    let text = await res.text();
+    if(!res.ok){
+      setStatus(`AI 服务错误 ${res.status}`); gameOver=true; aiThinking=false; return;
+    }
+    let obj = JSON.parse(text);
+    if(obj.error){
+      setStatus(`AI 计算错误: ${obj.error}`); gameOver=true; aiThinking=false; return;
+    }
+    let mv = obj.move;
+    if(!mv||mv.x<0||mv.y<0||mv.x>=N||mv.y>=N||board[mv.y][mv.x]!==0){
+      setStatus('AI 返回了无效落子！'); gameOver=true; aiThinking=false; return;
+    }
+    // 落子
+    board[mv.y][mv.x] = side+1;
+    lastAiMove = {x:mv.x,y:mv.y};
+    drawBoard();
+    // 胜负检测
+    if(checkWinClient(mv.x,mv.y,side+1)){
+      setStatus(`AI vs AI：${side===0?'黑方':'红方'} 赢了！`); gameOver=true; aiThinking=false; return;
+    }
+    if(isFull()){
+      setStatus('AI vs AI：平局！'); gameOver=true; aiThinking=false; return;
+    }
+    // 切换
+    aiVsAiSide = 1 - aiVsAiSide;
+    setTimeout(aiVsAiStep, 200);  // 小延迟
+  } catch(err){
+    setStatus('AI vs AI 过程中网络错误！'); gameOver=true; aiThinking=false; return;
+  }
+}
+
+// 启动 AI vs AI
+function startAiVsAi(){
+  resetGame();
+  aiVsAi = true;
+  aiVsAiSide = 0;
+  setTimeout(aiVsAiStep, 50);
+}
+
+// --- 其他控制 ---
+function resetGame(){
+  board = Array.from({length:N}, ()=>Array(N).fill(0));
+  gameOver = false; playerTurn = true; aiThinking = false;
+  lastAiMove = null; aiVsAi = false;
   drawBoard();
   setStatus('游戏已重置，您的回合');
 }
-
-function applySettings() {
-    const depthInput = document.getElementById('depthInput');
-    const workersInput = document.getElementById('workersInput');
-    const errorSpan = document.getElementById('validation-error');
-    errorSpan.textContent = '';
-
-    let newDepth = parseInt(depthInput.value, 10);
-    let newWorkers = parseInt(workersInput.value, 10);
-    let isValid = true;
-    let errorMsg = '';
-
-    // 深度上限改为 16
-    const maxDepth = 16;
-    if (isNaN(newDepth) || newDepth < 1 || newDepth > maxDepth) {
-        errorMsg += `深度必须在 1 到 ${maxDepth} 之间。`;
-        depthInput.value = currentDepth;
-        isValid = false;
-    }
-
-    // 工作单元上限改为 32
-    const maxWorkers = 32;
-    if (isNaN(newWorkers) || newWorkers < 1 || newWorkers > maxWorkers) {
-         errorMsg += (isValid ? '' : ' ') + `工作单元必须在 1 到 ${maxWorkers} 之间。`;
-         workersInput.value = currentThreads;
-         isValid = false;
-    }
-
-    if (isValid) {
-        currentDepth = newDepth;
-        currentThreads = newWorkers;
-        resetGame();
-        setStatus('设置已应用，开始新游戏');
-    } else {
-        errorSpan.textContent = errorMsg.trim();
-    }
-}
-
-function aiFirst() {
+function aiFirst(){
   resetGame();
-  playerTurn = false; aiThinking = true; lastAiMove = null;
-  setStatus('AI 先手，思考中...', true);
-  requestAnimationFrame(() => {
-       setTimeout(requestAiMove, 50);
-   });
+  playerTurn = false; aiVsAi=false;
+  setTimeout(requestAiMove, 50);
+}
+function applySettings(){
+  const d1 = parseInt(document.getElementById('depthInput1').value,10);
+  const d2 = parseInt(document.getElementById('depthInput2').value,10);
+  const w  = parseInt(document.getElementById('workersInput').value,10);
+  let err = '';
+  if(isNaN(d1)||d1<1||d1>16) err+='黑方深度须 1–16。';
+  if(isNaN(d2)||d2<1||d2>16) err+=(err?' ':'')+'红方深度须 1–16。';
+  if(isNaN(w)||w<1||w>32) err+=(err?' ':'')+'线程数须 1–32。';
+  if(err){
+    document.getElementById('validation-error').textContent = err;
+    return;
+  }
+  document.getElementById('validation-error').textContent = '';
+  currentDepthBlack = d1;
+  currentDepthRed   = d2;
+  currentThreads    = w;
+  resetGame();
+  setStatus('设置已应用，开始新游戏');
 }
 
-// --- Initial setup ---
-window.onload = () => {
-    document.getElementById('depthInput').value = currentDepth;
-    const workersInput = document.getElementById('workersInput');
-    workersInput.value = currentThreads;
-    // 将 max 限制也改为 32
-    workersInput.max = Math.max(currentThreads, 32);
-
-    drawBoard();
-    setStatus('游戏开始，您的回合');
+// 初始
+window.onload = ()=>{
+  document.getElementById('depthInput1').value = currentDepthBlack;
+  document.getElementById('depthInput2').value = currentDepthRed;
+  document.getElementById('workersInput').value = currentThreads;
+  drawBoard();
+  setStatus('游戏开始，您的回合');
 };
-
 </script>
 </body>
 </html>
