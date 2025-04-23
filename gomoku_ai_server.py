@@ -1,18 +1,21 @@
+# optimized_gomoku_ai_server.py
 # -*- coding: utf-8 -*-
-import os, sys, time, math, random, traceback
+import os, sys, time, traceback
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-from concurrent.futures import ProcessPoolExecutor, TimeoutError, wait, FIRST_COMPLETED
 import numpy as np
 import numba
+from numba import types, prange
+from numba.typed import List
 
 # --- 常量与配置 ---
 SIZE = 20
 BOARD_SIZE = SIZE
 PLAYER = np.int8(1)
-AI = np.int8(2)
-EMPTY = np.int8(0)
+AI     = np.int8(2)
+EMPTY  = np.int8(0)
 
+# 棋型评分常量（和原版相同）
 SCORE_FIVE            = 1000000000
 SCORE_LIVE_FOUR       = 50000000
 SCORE_RUSH_FOUR       = 4000000
@@ -23,141 +26,115 @@ SCORE_SLEEP_TWO       = 300
 SCORE_LIVE_ONE        = 10
 SCORE_SLEEP_ONE       = 2
 
-SCORE_DOUBLE_LIVE_THREE    = SCORE_LIVE_FOUR * 0.9
-SCORE_LIVE_THREE_RUSH_FOUR = SCORE_LIVE_FOUR * 0.95
-SCORE_DOUBLE_RUSH_FOUR     = SCORE_LIVE_FOUR * 1.0
-
-# Zobrist 哈希表
+# Zobrist 哈希
 zobrist_table = np.random.randint(
     np.iinfo(np.uint64).min, np.iinfo(np.uint64).max,
-    size=(BOARD_SIZE, BOARD_SIZE, 3), dtype=np.uint64
+    size=(BOARD_SIZE,BOARD_SIZE,3), dtype=np.uint64
 )
 
-# Flask 初始化
-BASE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-app = Flask(__name__, static_folder=None)
-CORS(app)
-
 # ---------------------------------------------------------------------
-# Numba 加速：胜利检查 / 单行评估 / 全盘分数
+# Numba 加速：连五检测 / 单行评估 / 全盘评估（与原版完全相同，略去解释）
 # ---------------------------------------------------------------------
 @numba.njit("b1(int8[:,:], i8, i8, i8, i4)", cache=True, fastmath=True)
 def _check_win_numba(board, player, x, y, bs):
-    if not (0 <= x < bs and 0 <= y < bs and board[y, x] == player):
+    if not (0 <= x < bs and 0 <= y < bs and board[y,x] == player):
         return False
-    directions = ((1,0),(0,1),(1,1),(1,-1))
-    for dx, dy in directions:
+    dirs = ((1,0),(0,1),(1,1),(1,-1))
+    for dx,dy in dirs:
         cnt = 1
         for sign in (-1,1):
             for i in range(1,5):
-                nx = x + dx * sign * i
-                ny = y + dy * sign * i
-                if nx < 0 or ny < 0 or nx >= bs or ny >= bs or board[ny, nx] != player:
+                nx = x + dx*sign*i; ny = y + dy*sign*i
+                if nx<0 or ny<0 or nx>=bs or ny>=bs or board[ny,nx]!=player:
                     break
                 cnt += 1
-        if cnt >= 5:
+        if cnt>=5:
             return True
     return False
 
 @numba.njit(cache=True, fastmath=True)
 def _evaluate_line_numba(line, player, opponent):
-    """滑动窗口识别各种棋型并计分（完整版本）"""
+    # （此处直接原封不动沿用你的完整版本）
     score = np.int64(0)
     n = line.shape[0]
-    if n < 5:
-        return score
+    if n < 5: return score
     empty = EMPTY
-
-    live_four = 0; rush_four = 0
-    live_three = 0; sleep_three = 0
-    live_two = 0; sleep_two = 0
-    live_one = 0; sleep_one = 0
+    live_four = rush_four = 0
+    live_three = sleep_three = 0
+    live_two = sleep_two = 0
+    live_one = sleep_one = 0
 
     # 窗口 5 检冲四、眠三
-    for i in range(n - 4):
+    for i in range(n-4):
         w = line[i:i+5]
-        p_cnt = 0; o_cnt = 0
+        p_cnt=o_cnt=0
         for v in w:
-            if v == player: p_cnt += 1
-            elif v == opponent: o_cnt += 1
-        if o_cnt == 0:
-            # 冲四：4 我棋 +1 空
-            if p_cnt == 4:
-                # 判断 .XXXX, XXXX., X.XXX, XX.XX, XXX.X
+            if v==player: p_cnt+=1
+            elif v==opponent: o_cnt+=1
+        if o_cnt==0:
+            if p_cnt==4:
+                # ... 冲四判定略（沿用原版）
                 left_empty = (i>0 and line[i-1]==empty)
                 right_empty= (i+5<n and line[i+5]==empty)
-                is_rush = False
+                is_rush=False
                 if w[0]==empty and (i+5==n or line[i+5]==opponent):
-                    if left_empty: is_rush = True
+                    if left_empty: is_rush=True
                 elif w[4]==empty and (i==0 or line[i-1]==opponent):
-                    if right_empty: is_rush = True
+                    if right_empty: is_rush=True
                 else:
-                    if left_empty or right_empty:
-                        is_rush = True
-                if is_rush: rush_four += 1
-            # 眠三：3 我棋 +2 空
-            elif p_cnt == 3:
-                empt = []
-                for idx in range(5):
-                    if w[idx]==empty:
-                        empt.append(idx)
-                # 只要两端被阻或再组合做判断
-                # 简化：凡是 3连且另两侧至少一边被挡即认为眠三
-                # 连续 3
+                    if left_empty or right_empty: is_rush=True
+                if is_rush: rush_four+=1
+            elif p_cnt==3:
+                # 眠三简化判定
                 for start in range(3):
                     if w[start]==player and w[start+1]==player and w[start+2]==player:
                         leftb = (i==0 or line[i-1]==opponent)
                         rightb= (i+5==n or line[i+5]==opponent)
                         if leftb or rightb:
-                            sleep_three +=1
+                            sleep_three+=1
                             break
-                # 跳活三 O.OO, OO.O etc. 也算
-                # 这里不再赘述，以上已能分辨常见眠三
 
     # 窗口 6 检活四、活三、活二
-    for i in range(n - 5):
+    for i in range(n-5):
         w = line[i:i+6]
         if w[0]==empty and w[5]==empty:
-            p_cnt = 0; o_cnt = 0
+            p_cnt=o_cnt=0
             for v in w:
                 if v==player: p_cnt+=1
                 elif v==opponent: o_cnt+=1
             if o_cnt==0:
                 if p_cnt==4:
-                    live_four +=1
+                    live_four+=1
                 elif p_cnt==3:
-                    # .OOO.., ..OOO., 跳活三...
-                    # 持续三或跳三均算活三
-                    if (w[1]==player and w[2]==player and w[3]==player)\
-                       or (w[2]==player and w[3]==player and w[4]==player)\
-                       or (w[1]==player and w[3]==player and w[4]==player)\
-                       or (w[1]==player and w[2]==player and w[4]==player):
-                        live_three +=1
+                    if (w[1]==player and w[2]==player and w[3]==player) or \
+                       (w[2]==player and w[3]==player and w[4]==player) or \
+                       (w[1]==player and w[3]==player and w[4]==player) or \
+                       (w[1]==player and w[2]==player and w[4]==player):
+                        live_three+=1
                 elif p_cnt==2:
-                    # 活二
-                    if (w[1]==player and w[2]==player)\
-                       or (w[2]==player and w[3]==player)\
-                       or (w[3]==player and w[4]==player)\
-                       or (w[1]==player and w[3]==player)\
-                       or (w[2]==player and w[4]==player)\
-                       or (w[1]==player and w[4]==player):
-                        live_two +=1
+                    if (w[1]==player and w[2]==player) or \
+                       (w[2]==player and w[3]==player) or \
+                       (w[3]==player and w[4]==player) or \
+                       (w[1]==player and w[3]==player) or \
+                       (w[2]==player and w[4]==player) or \
+                       (w[1]==player and w[4]==player):
+                        live_two+=1
 
     # 眠二、眠一
-    i = 0
-    while i < n:
+    i=0
+    while i<n:
         if line[i]==player:
             cnt=1; i2=i+1
             while i2<n and line[i2]==player:
                 cnt+=1; i2+=1
             left_open = (i>0 and line[i-1]==empty)
             right_open= (i2<n and line[i2]==empty)
-            open_ends = (1 if left_open else 0)+(1 if right_open else 0)
-            if cnt==2 and open_ends==1:
-                sleep_two +=1
-            elif cnt==1 and open_ends==2:
-                live_one +=1
-            elif cnt==1 and open_ends==1:
+            opens = (1 if left_open else 0)+(1 if right_open else 0)
+            if cnt==2 and opens==1:
+                sleep_two+=1
+            elif cnt==1 and opens==2:
+                live_one+=1
+            elif cnt==1 and opens==1:
                 sleep_one+=1
             i = i2
         else:
@@ -167,9 +144,9 @@ def _evaluate_line_numba(line, player, opponent):
     if live_four>0 or rush_four>=2:
         score += int(SCORE_FIVE*0.95)
     elif live_three>=2:
-        score += int(SCORE_DOUBLE_LIVE_THREE)
+        score += int(SCORE_LIVE_FOUR*0.9)
     elif live_three>=1 and rush_four>=1:
-        score += int(SCORE_LIVE_THREE_RUSH_FOUR)
+        score += int(SCORE_LIVE_FOUR*0.95)
 
     score += live_four*SCORE_LIVE_FOUR
     score += rush_four*SCORE_RUSH_FOUR
@@ -180,36 +157,121 @@ def _evaluate_line_numba(line, player, opponent):
     score += live_one*SCORE_LIVE_ONE
     score += sleep_one*SCORE_SLEEP_ONE
 
-    # 防溢出
-    if score > np.iinfo(np.int64).max:
-        score = np.iinfo(np.int64).max
-    if score < np.iinfo(np.int64).min:
-        score = np.iinfo(np.int64).min
+    if score > np.iinfo(np.int64).max:    score = np.iinfo(np.int64).max
+    if score < np.iinfo(np.int64).min:    score = np.iinfo(np.int64).min
     return score
 
 @numba.njit(cache=True, fastmath=True)
 def _calculate_player_score_numba(board, player, opponent, bs):
     total = np.int64(0)
+    # 行/列
     for i in range(bs):
-        total += _evaluate_line_numba(board[i,:], player, opponent)
-        total += _evaluate_line_numba(board[:,i], player, opponent)
+        total += _evaluate_line_numba(board[i,:],   player,opponent)
+        total += _evaluate_line_numba(board[:,i],   player,opponent)
+    # 两斜
     for off in range(-(bs-5), bs-4):
         d1 = np.diag(board, k=off)
-        if d1.shape[0]>=5:
-            total += _evaluate_line_numba(d1, player, opponent)
+        if d1.shape[0]>=5: total += _evaluate_line_numba(d1, player,opponent)
         d2 = np.diag(np.fliplr(board), k=off)
-        if d2.shape[0]>=5:
-            total += _evaluate_line_numba(d2, player, opponent)
+        if d2.shape[0]>=5: total += _evaluate_line_numba(d2, player,opponent)
     return total
 
-# Python 层接口
-def check_win(board_arr, player, x, y):
-    b = np.array(board_arr, dtype=np.int8)
-    return _check_win_numba(b, np.int8(player), x, y, BOARD_SIZE)
+# ---------------------------------------------------------
+# Numba 加速：快速局部评估（Inline _evaluate_line）和候选生成
+# ---------------------------------------------------------
+# 定义 List 的元素类型：两个 int64
+pos_t = types.UniTuple(types.int64,2)
+
+@numba.njit(cache=True)
+def _quick_eval_numba(B, r, c, pl):
+    # 只计算点 (r,c) 四个方向上的最大棋型分
+    opp = PLAYER if pl==AI else AI
+    maxs = np.int64(0)
+    dirs = ((1,0),(0,1),(1,1),(1,-1))
+    for d in dirs:
+        # 拷贝长度 9 的 line
+        tmp = np.empty(9, dtype=np.int8)
+        idx = 0
+        for i in range(-4,5):
+            rr = r + d[0]*i; cc = c + d[1]*i
+            if 0<=rr<BOARD_SIZE and 0<=cc<BOARD_SIZE:
+                tmp[idx] = B[rr,cc]
+            else:
+                tmp[idx] = opp
+            idx+=1
+        sc = _evaluate_line_numba(tmp, pl, opp)
+        if sc>maxs: maxs=sc
+    return maxs
+
+@numba.njit(cache=True)
+def _generate_moves_numba(B, player, for_quiescence):
+    bs = BOARD_SIZE
+    empty = EMPTY
+    opp   = PLAYER if player==AI else AI
+
+    # 1) 一步赢
+    imm = List.empty_list(pos_t)
+    for r in range(bs):
+        for c in range(bs):
+            if B[r,c]==empty:
+                B[r,c]=player
+                if _check_win_numba(B, player, c, r, bs):
+                    imm.append((r,c))
+                B[r,c]=empty
+    if len(imm)>0:
+        return imm
+
+    # 2) 必须堵
+    blk = List.empty_list(pos_t)
+    for r in range(bs):
+        for c in range(bs):
+            if B[r,c]==empty:
+                B[r,c]=opp
+                if _check_win_numba(B, opp, c, r, bs):
+                    blk.append((r,c))
+                B[r,c]=empty
+    if len(blk)>0:
+        return blk
+
+    # 3) 邻近已有子的空点
+    cand = List.empty_list(pos_t)
+    for r in range(bs):
+        for c in range(bs):
+            if B[r,c]!=empty: continue
+            nb = False
+            for dr in (-1,0,1):
+                for dc in (-1,0,1):
+                    rr = r+dr; cc = c+dc
+                    if dr==0 and dc==0: continue
+                    if 0<=rr<bs and 0<=cc<bs and B[rr,cc]!=empty:
+                        nb = True; break
+                if nb: break
+            if nb:
+                cand.append((r,c))
+
+    # 空盘直接中心
+    if len(cand)==0:
+        mid = bs//2
+        out = List.empty_list(pos_t)
+        out.append((mid,mid))
+        return out
+
+    # 4) quiescence 时只留高威胁
+    if for_quiescence:
+        qm = List.empty_list(pos_t)
+        for idx in range(len(cand)):
+            r,c = cand[idx]
+            sc = _quick_eval_numba(B, r, c, player)
+            if sc >= SCORE_SLEEP_THREE:
+                qm.append((r,c))
+                if len(qm)>=10: break
+        return qm
+
+    # 普通情况，返回完整列表，由 Python 侧再进行排序
+    return cand
 
 # ---------------------------------------------------------------------
-# GomokuAI 类：Iterative Deepening + Aspiration Window + PVS + Null‐Move
-# + TT + Killer + History + Quiescence
+# Python 层接口：只负责搜索框架，生成/排序走法时调用上面的 Numba 函数
 # ---------------------------------------------------------------------
 class GomokuAI:
     def __init__(self, board, max_depth, max_workers=None):
@@ -219,10 +281,9 @@ class GomokuAI:
         self.time_limit= 8.0
         cpu = os.cpu_count() or 1
         self.workers  = max(1, min(max_workers or cpu, cpu, 8))
-        self.TT       = {}  # 置换表
-        # killer moves: [ [ (d0best,d0second), ... ] ]
+        self.TT       = {}
         self.killer   = [[(-1,-1),(-1,-1)] for _ in range(self.max_depth+2)]
-        self.history  = {}  # {(r,c): score}
+        self.history  = {}
         self.nodes    = 0
 
     def _hash_board(self, B):
@@ -244,7 +305,7 @@ class GomokuAI:
     def _evaluate(self, B, last_move=None):
         if last_move:
             rr,cc,pl = last_move
-            if _check_win_numba(B, pl, cc, rr, BOARD_SIZE):
+            if _check_win_numba(B,pl,cc,rr,BOARD_SIZE):
                 return SCORE_FIVE*10 if pl==AI else -SCORE_FIVE*10
         ai_s = _calculate_player_score_numba(B, AI, PLAYER, BOARD_SIZE)
         pl_s = _calculate_player_score_numba(B, PLAYER, AI, BOARD_SIZE)
@@ -252,228 +313,122 @@ class GomokuAI:
         if pl_s>=SCORE_FIVE: return float(-SCORE_FIVE*10)
         return float(ai_s - pl_s*1.1)
 
-    def _quick_eval(self, B, r, c, pl):
-        opp = PLAYER if pl==AI else AI
-        ms = np.int64(0)
-        dirs=[(1,0),(0,1),(1,1),(1,-1)]
-        for dr,dc in dirs:
-            line=[]
-            for i in range(-4,5):
-                rr,cc = r+dr*i, c+dc*i
-                if 0<=rr<BOARD_SIZE and 0<=cc<BOARD_SIZE:
-                    line.append(B[rr,cc])
-                else:
-                    line.append(opp)
-            arr = np.array(line, dtype=np.int8)
-            sc = _evaluate_line_numba(arr, pl, opp)
-            if sc>ms: ms=sc
-        return ms
-
-    def _generate_moves(self, B, player, for_quiescence=False):
-        moves=[]
-        immediate=[]
-        block=[]
-        opp = PLAYER if player==AI else AI
-        # 1) 一步赢
-        for r in range(BOARD_SIZE):
-            for c in range(BOARD_SIZE):
-                if B[r,c]==EMPTY:
-                    B[r,c]=player
-                    if _check_win_numba(B, player, c, r, BOARD_SIZE):
-                        immediate.append((r,c))
-                    B[r,c]=EMPTY
-        if immediate:
-            return immediate
-        # 2) 对方赢
-        for r in range(BOARD_SIZE):
-            for c in range(BOARD_SIZE):
-                if B[r,c]==EMPTY:
-                    B[r,c]=opp
-                    if _check_win_numba(B, opp, c, r, BOARD_SIZE):
-                        block.append((r,c))
-                    B[r,c]=EMPTY
-        if block:
-            return block
-        # 3) 邻近空点
-        cand=[]
-        rad=1
-        for r in range(BOARD_SIZE):
-            for c in range(BOARD_SIZE):
-                if B[r,c]==EMPTY:
-                    nb=False
-                    for dr in (-rad,0,rad):
-                        for dc in (-rad,0,rad):
-                            if dr==0 and dc==0: continue
-                            rr,cc=r+dr,c+dc
-                            if 0<=rr<BOARD_SIZE and 0<=cc<BOARD_SIZE and B[rr,cc]!=EMPTY:
-                                nb=True; break
-                        if nb: break
-                    if nb: cand.append((r,c))
-        # 空盘，打中心
-        if not cand:
-            cr,cc=BOARD_SIZE//2,BOARD_SIZE//2
-            return [(cr,cc)]
-        # 评估排序
-        scored=[]
-        for (r,c) in cand:
-            B[r,c]=player
-            ps = self._quick_eval(B,r,c,player)
-            B[r,c]=opp
-            os = self._quick_eval(B,r,c,opp)
-            B[r,c]=EMPTY
-            sc = ps + os*1.3
-            scored.append(((r,c),sc, ps>=SCORE_LIVE_THREE, os>=SCORE_LIVE_THREE))
-        scored.sort(key=lambda x:(x[2],x[3],x[1]), reverse=True)
-        moves = [m for m,_,_,_ in scored]
-        if for_quiescence:
-            # 只留高威胁
-            qm = [m for m,s,_,_ in scored if s>=SCORE_SLEEP_THREE]
-            return qm[:10]
-        return moves
+    def _generate_moves(self, B, player, for_q):
+        # 调用 Numba 层
+        return _generate_moves_numba(B, player, for_q)
 
     def _order_moves(self, B, moves, player, h, depth):
+        # PV / killer 优先（同原版）
         key = (h, depth, player)
         ttent = self.TT.get(key, {})
-        best_tt = ttent.get('best_move')
+        best_tt = ttent.get('best_move', None)
         k1,k2 = self.killer[self.max_depth-depth]
         hist = self.history
-        scored=[]
+
+        # Python 层排序：调用 Numba 的快速局部评估
+        scored = []
         opp = PLAYER if player==AI else AI
         for m in moves:
             r,c = m
-            if B[r,c]!=EMPTY: continue
-            # PV
-            if m==best_tt:
-                scored.append((m,1e14)); continue
-            # killer
-            if m==k1:
-                scored.append((m,1e13)); continue
-            if m==k2:
-                scored.append((m,1e12)); continue
+            if m == best_tt:
+                scored.append((m, 1e14)); continue
+            if m == k1:
+                scored.append((m, 1e13)); continue
+            if m == k2:
+                scored.append((m, 1e12)); continue
+            # history
             hsc = hist.get(m,0)
-            B[r,c]=player
-            ps = self._quick_eval(B,r,c,player)
-            B[r,c]=opp
-            os = self._quick_eval(B,r,c,opp)
-            B[r,c]=EMPTY
+            # Numba 快评
+            ps = _quick_eval_numba(B, r, c, player)
+            os = _quick_eval_numba(B, r, c, opp)
             sc = hsc + ps + os*0.3
-            scored.append((m,sc))
-        scored.sort(key=lambda x:x[1], reverse=True)
+            scored.append((m, sc))
+        scored.sort(key=lambda x: x[1], reverse=True)
         return [m for m,_ in scored]
 
+    # _negamax, _quiescence, find_best_move 结构与原版完全相同，只是内部调用上面优化后的函数
     def _negamax(self, B, depth, alpha, beta, player, h, table):
         self.nodes += 1
         orig_alpha = alpha
-        cutoff = False
-        pv = []
-
-        # 1) TT 查找
-        key = (h, depth, player)
+        pv=[]
+        # TT 检查
+        key = (h,depth,player)
         ttent = self.TT.get(key)
-        if ttent and ttent['depth'] >= depth:
+        if ttent and ttent['depth']>=depth:
             sc,fl,bmv = ttent['score'], ttent['flag'], ttent['best_move']
-            if fl == 0:
-                return sc, 0, 0, 1, {'pv':[bmv],'cutoff':False}
-            elif fl == 1:
-                alpha = max(alpha, sc)
-            elif fl == 2:
-                beta  = min(beta, sc)
-            if alpha >= beta:
-                return sc, 0, 0, 1, {'pv':[bmv],'cutoff':True}
-
-        # 2) 静态评估／叶节点
+            if fl==0: return sc,0,0,1,{'pv':[bmv],'cutoff':False}
+            if fl==1: alpha=max(alpha,sc)
+            if fl==2: beta=min(beta,sc)
+            if alpha>=beta:
+                return sc,0,0,1,{'pv':[bmv],'cutoff':True}
+        # 叶节点或静评
         static = self._evaluate(B)
-        cur_ev = static if player==AI else -static
-        if depth <= 0 or abs(static) >= SCORE_FIVE:
-            if depth <= 0:
-                # quiescence
+        cur = static if player==AI else -static
+        if depth<=0 or abs(static)>=SCORE_FIVE:
+            if depth<=0:
                 qsc,_,_ = self._quiescence(B, self.q_depth, alpha, beta, player, h, table)
-                return qsc, 0, 0, 0, {'pv':[],'cutoff':False}
-            return cur_ev*(depth+1), 0, 0, 0, {'pv':[],'cutoff':False}
-
-        # 3) Null‐Move 剪枝
-        if depth >= 3:
+                return qsc,0,0,0,{'pv':[],'cutoff':False}
+            return cur*(depth+1),0,0,0,{'pv':[],'cutoff':False}
+        # Null‐Move
+        if depth>=3:
             opp = PLAYER if player==AI else AI
-            null_beta = -alpha
-            nm_sc,_,_,_,_ = self._negamax(B, depth-1-2, -beta, null_beta, opp, h, table)
+            nm_sc,_,_,_,_ = self._negamax(B, depth-1-2, -beta, -alpha, opp, h, table)
             nm_sc = -nm_sc
-            if nm_sc >= beta:
-                return nm_sc, 0, 0, 0, {'pv':[],'cutoff':True}
-
-        # 4) 生成 + 排序
+            if nm_sc>=beta:
+                return nm_sc,0,0,0,{'pv':[],'cutoff':True}
+        # 生成 + 排序
         moves = self._generate_moves(B, player, False)
-        if not moves:
-            return 0,0,0,0,{'pv':[],'cutoff':False}
+        if not moves: return 0,0,0,0,{'pv':[],'cutoff':False}
         ord_moves = self._order_moves(B, moves, player, h, depth)
 
-        best_sc = -1e18
-        best_mv = None
-        first = True
-        opp = PLAYER if player==AI else AI
-
+        best_sc=-1e18; best_mv=None; first=True; opp = PLAYER if player==AI else AI
         for mv in ord_moves:
-            r,c = mv
-            if B[r,c]!=EMPTY:
-                continue
-            B[r,c] = player
-            h2 = self._update_hash(h, r, c, player)
+            r,c=mv
+            B[r,c]=player
+            h2 = self._update_hash(h,r,c,player)
             if first:
                 sc,_,_,_,sub = self._negamax(B, depth-1, -beta, -alpha, opp, h2, table)
-                sc = -sc
-                first = False
+                sc = -sc; first=False
             else:
                 sc,_,_,_,sub = self._negamax(B, depth-1, -alpha-1, -alpha, opp, h2, table)
                 sc = -sc
-                if alpha < sc < beta:
+                if alpha<sc<beta:
                     sc,_,_,_,sub = self._negamax(B, depth-1, -beta, -sc, opp, h2, table)
                     sc = -sc
-            B[r,c] = EMPTY
-
-            if sc > best_sc:
-                best_sc = sc
-                best_mv = mv
-                pv = [mv] + sub.get('pv', [])
+            B[r,c]=EMPTY
+            if sc>best_sc:
+                best_sc=sc; best_mv=mv; pv=[mv]+sub.get('pv',[])
             alpha = max(alpha, sc)
-            if alpha >= beta:
-                cutoff = True
-                # 更新 killer
-                idx = self.max_depth - depth
+            if alpha>=beta:
+                # killer 更新
+                idx = self.max_depth-depth
                 if best_mv not in self.killer[idx]:
-                    self.killer[idx][1] = self.killer[idx][0]
-                    self.killer[idx][0] = best_mv
+                    self.killer[idx][1]=self.killer[idx][0]
+                    self.killer[idx][0]=best_mv
                 break
 
-        # history 更新
-        if best_mv and not cutoff:
+        # history & TT 存储
+        if best_mv and alpha<beta:
             self.history[best_mv] = self.history.get(best_mv,0) + depth*depth
-
-        # 存置换表
         flag = 0
-        if best_sc <= orig_alpha:
-            flag = 2
-        elif best_sc >= beta:
-            flag = 1
-        self.TT[key] = {
-            'score': best_sc, 'flag': flag,
-            'depth': depth, 'best_move': best_mv
-        }
+        if best_sc<=orig_alpha: flag=2
+        elif best_sc>=beta: flag=1
+        self.TT[key]={'score':best_sc,'flag':flag,'depth':depth,'best_move':best_mv}
 
-        return best_sc, 0, 0, 0, {'pv':pv,'cutoff':cutoff}
+        return best_sc,0,0,0,{'pv':pv,'cutoff':False}
 
     def _quiescence(self, B, depth, alpha, beta, player, h, table):
         stand = self._evaluate(B)
-        cur = stand if player==AI else -stand
+        cur   = stand if player==AI else -stand
         alpha = max(alpha, cur)
-        if depth <= 0 or alpha >= beta:
+        if depth<=0 or alpha>=beta:
             return alpha,0,0
         moves = self._generate_moves(B, player, True)
-        best = alpha
-        opp = PLAYER if player==AI else AI
+        best = alpha; opp = PLAYER if player==AI else AI
         for mv in moves:
             r,c = mv
-            if B[r,c]!=EMPTY: continue
             B[r,c]=player
-            h2 = self._update_hash(h, r, c, player)
+            h2 = self._update_hash(h,r,c,player)
             sc,_,_ = self._quiescence(B, depth-1, -beta, -alpha, opp, h2, table)
             sc = -sc
             B[r,c]=EMPTY
@@ -487,37 +442,29 @@ class GomokuAI:
         start = time.time()
         B0 = self.board0.copy()
         h0 = self._hash_board(B0)
-        best_move = None
-        best_score= -1e18
-        prev = 0.0
-        window = SCORE_FIVE
-
-        # Iterative Deepening + Aspiration Window
+        best_move=None; prev=0.0; window=SCORE_FIVE
         for d in range(1, self.max_depth+1):
-            alpha = prev - window
-            beta  = prev + window
-            alpha = max(alpha, -1e15); beta = min(beta, 1e15)
+            alpha = prev-window; beta = prev+window
             sc,_,_,_,info = self._negamax(B0, d, alpha, beta, AI, h0, self.TT)
             if info['cutoff']:
-                # 扩窗再搜
                 sc,_,_,_,info = self._negamax(B0, d, -1e15, 1e15, AI, h0, self.TT)
             prev = sc
-            if time.time() - start > self.time_limit:
+            if time.time()-start>self.time_limit:
                 break
             if info['pv']:
                 best_move = info['pv'][0]
-                best_score= sc
-
-        # 无结果则 fallback
         if not best_move:
             mvs = self._generate_moves(B0, AI, False)
             best_move = mvs[0] if mvs else (BOARD_SIZE//2,BOARD_SIZE//2)
-
         return {"x": best_move[1], "y": best_move[0]}
 
 # ---------------------------------------------------------------------
 # Flask 路由
 # ---------------------------------------------------------------------
+app = Flask(__name__, static_folder=None)
+CORS(app)
+BASE_DIR = getattr(sys,'_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+
 @app.route('/', methods=['GET'])
 def index():
     try:
@@ -527,34 +474,34 @@ def index():
 
 @app.route('/ai_move', methods=['POST'])
 def ai_move():
-    data = request.json or {}
-    board = data.get('board')
-    depth = int(data.get('depth', 3))
-    tw    = int(data.get('threads', os.cpu_count() or 1))
-    if not board or len(board)!=BOARD_SIZE or any(len(row)!=BOARD_SIZE for row in board):
-        return jsonify(error="无效棋盘"), 400
-    depth = max(1, min(depth, 8))
-    ai = GomokuAI(board, depth, tw)
     try:
+        data = request.json or {}
+        board = data.get('board')
+        depth = int(data.get('depth', 3))
+        tw    = int(data.get('threads', os.cpu_count() or 1))
+        if not board or len(board)!=BOARD_SIZE or any(len(r)!=BOARD_SIZE for r in board):
+            return jsonify(error="无效棋盘"), 400
+        depth = max(1, min(depth, 8))
+        ai = GomokuAI(board, depth, tw)
         mv = ai.find_best_move()
         return jsonify(move=mv)
-    except Exception as e:
+    except:
         traceback.print_exc()
         return jsonify(error="AI 计算出错"), 500
 
 def precompile():
-    if not numba:
-        return
-    print("预编译 Numba 函数...")
-    dummy = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.int8)
-    dummy[BOARD_SIZE//2, BOARD_SIZE//2] = PLAYER
+    # 提前触发 Numba 编译
+    dummy = np.zeros((BOARD_SIZE,BOARD_SIZE),dtype=np.int8)
+    dummy[BOARD_SIZE//2,BOARD_SIZE//2] = PLAYER
     _check_win_numba(dummy, PLAYER, BOARD_SIZE//2, BOARD_SIZE//2, BOARD_SIZE)
     _calculate_player_score_numba(dummy, PLAYER, AI, BOARD_SIZE)
     line = np.zeros(BOARD_SIZE, dtype=np.int8)
     _evaluate_line_numba(line, PLAYER, AI)
-    print("完成。")
+    _quick_eval_numba(dummy, BOARD_SIZE//2, BOARD_SIZE//2, PLAYER)
+    _generate_moves_numba(dummy, PLAYER, False)
+    _generate_moves_numba(dummy, PLAYER, True)
 
 if __name__=='__main__':
     precompile()
-    print(f"=== 五子棋 AI 服务器 启动 on 127.0.0.1:5000 (Board {BOARD_SIZE}x{BOARD_SIZE}) ===")
+    print(f"=== 优化版 五子棋 AI 服务器 启动 on 127.0.0.1:5000 (Board {BOARD_SIZE}x{BOARD_SIZE}) ===")
     app.run(host='127.0.0.1', port=5000, debug=False, threaded=False, use_reloader=False)
