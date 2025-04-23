@@ -174,13 +174,15 @@
     <div class="controls-panel">
         <div class="control-group">
             <label for="depthInput">搜索深度:</label>
-            <input type="number" id="depthInput" min="1" max="6" value="3">
-            <span>(1-6, 推荐 2-4, 更高会很慢)</span>
+            <!-- 改为 max=16 -->
+            <input type="number" id="depthInput" min="1" max="16" value="3">
+            <span>(1-16, 推荐 4-8, 更高会很慢)</span>
         </div>
         <div class="control-group">
             <label for="workersInput">并行工作单元:</label>
-            <input type="number" id="workersInput" min="1" max="16" value="4">
-            <span>(1-16, 推荐 CPU 核心数)</span>
+            <!-- 改为 max=32 -->
+            <input type="number" id="workersInput" min="1" max="32" value="4">
+            <span>(1-32, 推荐 CPU 核心数)</span>
         </div>
         <div class="settings-actions">
             <button id="applySettingsBtn" onclick="applySettings()">应用设置</button>
@@ -215,8 +217,8 @@ let currentThreads = 4; // Default number of parallel workers
 // Try to get CPU core count for default, fallback to 4
 try {
     currentThreads = navigator.hardwareConcurrency || 4;
-    // Clamp threads to a reasonable maximum like 16 for the input field
-    currentThreads = Math.min(currentThreads, 16);
+    // Clamp threads to a reasonable maximum like 32 for the input field
+    currentThreads = Math.min(currentThreads, 32);
 } catch (e) {
     console.warn("Could not detect CPU core count.");
     currentThreads = 4;
@@ -282,13 +284,8 @@ function drawBoard() {
         }
 
         ctx.fillStyle = gradient;
-        // Add a subtle shadow (optional)
-        // ctx.shadowColor = 'rgba(0,0,0,0.3)';
-        // ctx.shadowBlur = 2; ctx.shadowOffsetX = 1; ctx.shadowOffsetY = 1;
-
         ctx.arc(pieceX, pieceY, radius, 0, 2 * Math.PI);
         ctx.fill();
-        // ctx.shadowColor = 'transparent'; // Reset shadow
       }
     }
   }
@@ -309,20 +306,17 @@ function drawBoard() {
 }
 
 // --- Game Logic ---
-// Client-side win check for immediate feedback (optional but good UX)
 function checkWinClient(x, y, player) {
   if (x < 0 || y < 0 || x >= N || y >= N || !board[y] || board[y][x] !== player) return false;
-  const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]]; // horizontal, vertical, diag1, diag2
+  const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
   for (let [dx, dy] of dirs) {
     let count = 1;
-    // Check in one direction
     for (let i = 1; i < 5; i++) {
       let nx = x + i * dx;
       let ny = y + i * dy;
       if (nx < 0 || ny < 0 || nx >= N || ny >= N || !board[ny] || board[ny][nx] !== player) break;
       count++;
     }
-    // Check in opposite direction
     for (let i = 1; i < 5; i++) {
       let nx = x - i * dx;
       let ny = y - i * dy;
@@ -340,27 +334,22 @@ function isFull() {
 
 // --- Event Handlers ---
 canvas.addEventListener('click', e => {
-  if (gameOver || !playerTurn || aiThinking) return; // Prevent clicks if game over or AI's turn
+  if (gameOver || !playerTurn || aiThinking) return;
 
   let rect = canvas.getBoundingClientRect();
-  // Calculate click coordinates relative to canvas, accounting for border/padding/scaling
   let scaleX = canvas.width / rect.width;
   let scaleY = canvas.height / rect.height;
   let canvasX = (e.clientX - rect.left) * scaleX;
   let canvasY = (e.clientY - rect.top) * scaleY;
-  // Calculate grid cell coordinates
   let x = Math.floor(canvasX / cell);
   let y = Math.floor(canvasY / cell);
 
-  // Check if click is valid (within bounds and on empty cell)
   if (x < 0 || y < 0 || x >= N || y >= N || !board[y] || board[y][x] !== 0) return;
 
-  // Place player piece
   board[y][x] = 1; // Player = 1
-  lastAiMove = null; // Clear AI marker when player moves
+  lastAiMove = null;
   drawBoard();
 
-  // Check player win (client-side)
   if (checkWinClient(x, y, 1)) {
     setStatus('恭喜你赢了！🎉');
     gameOver = true;
@@ -372,27 +361,20 @@ canvas.addEventListener('click', e => {
     return;
   }
 
-  // Switch to AI turn
   playerTurn = false;
-  aiThinking = true; // Set thinking flag
-  setStatus('AI 思考中...', true); // Update status immediately
-  // Use requestAnimationFrame for smoother UI update before potentially long AI call
+  aiThinking = true;
+  setStatus('AI 思考中...', true);
   requestAnimationFrame(() => {
-       setTimeout(requestAiMove, 50); // Short delay before fetch seems to help UI responsiveness
+       setTimeout(requestAiMove, 50);
    });
 });
 
 async function requestAiMove() {
-  if (gameOver) {
-      aiThinking = false; // Ensure flag is reset if game ended before AI moved
-      return;
-  }
+  if (gameOver) { aiThinking = false; return; }
 
   try {
-    console.log(`请求 AI 移动: 深度=${currentDepth}, 并行单元=${currentThreads}`);
-    setStatus('AI 思考中...', true); // Ensure status is set
-
-    const startTime = performance.now(); // Track AI thinking time
+    setStatus('AI 思考中...', true);
+    const startTime = performance.now();
 
     let response = await fetch(API, {
       method: 'POST',
@@ -400,101 +382,69 @@ async function requestAiMove() {
       body: JSON.stringify({ board: board, depth: currentDepth, threads: currentThreads })
     });
 
-    let responseText = await response.text(); // Get raw text first for debugging
+    let responseText = await response.text();
     const endTime = performance.now();
     const duration = ((endTime - startTime)/1000).toFixed(2);
-    console.log(`AI 响应在 ${duration}s 内收到. 状态: ${response.status}`);
-
 
     if (!response.ok) {
-        console.error("AI 服务器 HTTP 错误:", response.status, responseText);
         let errorMsg = `AI 服务器错误 ${response.status}`;
         try {
             let errorData = JSON.parse(responseText);
             errorMsg = `AI 错误: ${errorData.error || errorMsg}`;
-        } catch (parseError) {
-             console.error("无法解析错误 JSON:", responseText);
-        }
-        setStatus(errorMsg); // Show error to user
-        playerTurn = true; // Allow player to maybe try again? Or indicate game needs reset.
-        aiThinking = false;
+        } catch {}
+        setStatus(errorMsg);
+        playerTurn = true; aiThinking = false;
         return;
     }
 
     let data;
     try {
         data = JSON.parse(responseText);
-    } catch (parseError) {
-        console.error("无法解析 AI 响应 JSON:", responseText);
+    } catch {
         setStatus(`AI 错误: 无法解析服务器响应`);
-        playerTurn = true;
-        aiThinking = false;
+        playerTurn = true; aiThinking = false;
         return;
     }
 
     if (data.error) {
-      console.error("AI 逻辑错误:", data.error);
       setStatus(`AI 计算错误: ${data.error}`);
-      playerTurn = true;
-      aiThinking = false;
+      playerTurn = true; aiThinking = false;
       return;
     }
 
-     if (data.warning) { // Display warnings from the server
-       console.warn("AI 警告:", data.warning);
-       // Optionally display the warning to the user, e.g., append to status
-     }
-
-
     if (data.move && data.move.x !== undefined && data.move.y !== undefined) {
         let { x, y } = data.move;
-        console.log("AI 移动:", data.move);
-        if (x >= 0 && y >= 0 && x < N && y < N && board[y] && board[y][x] === 0) {
-            board[y][x] = 2; // Place AI piece (AI=2)
-            lastAiMove = { x, y }; // Store last move for marker
-            drawBoard(); // Redraw board with new piece and marker
-
-            // Check AI win (client-side)
-            if (checkWinClient(x, y, 2)) {
+        if (x>=0&&y>=0&&x<N&&y<N&&board[y][x]===0) {
+            board[y][x] = 2;
+            lastAiMove = { x, y };
+            drawBoard();
+            if (checkWinClient(x,y,2)) {
                  setStatus(`AI 赢了！🤖 (思考 ${duration}s)`);
-                 gameOver = true;
-                 aiThinking = false;
-                 return;
+                 gameOver = true; aiThinking = false; return;
             }
             if (isFull()) {
                  setStatus('平局！🤝');
-                 gameOver = true;
-                 aiThinking = false;
-                 return;
+                 gameOver = true; aiThinking = false; return;
              }
-            // Game continues, switch back to player
-            playerTurn = true;
-            aiThinking = false;
+            playerTurn = true; aiThinking = false;
             setStatus(`您的回合 (AI 耗时 ${duration}s)`);
         } else {
-            // This case indicates a serious bug in the AI logic or state mismatch
-            console.error("严重错误: AI 返回无效移动:", data.move, ` 单元格值: ${board[y]?.[x] ?? '越界'}`);
             setStatus('AI 返回了无效的移动！请检查服务器日志。');
-            playerTurn = true; // Allow player turn, but game state might be corrupted
-            aiThinking = false;
+            playerTurn = true; aiThinking = false;
         }
     } else {
-         console.error("来自 AI 的无效响应结构:", data);
          setStatus('AI 未能返回有效移动格式！');
-         playerTurn = true;
-         aiThinking = false;
+         playerTurn = true; aiThinking = false;
     }
   } catch (err) {
-    console.error("网络或 fetch 错误:", err);
     setStatus('无法连接到 AI 服务器！请检查服务器是否运行且网络正常。');
-    playerTurn = true; // Allow player to try again
-    aiThinking = false;
+    playerTurn = true; aiThinking = false;
   } finally {
-      // Ensure thinking status is cleared if game isn't over and it's player's turn
        if (!gameOver && playerTurn) {
-           setStatus(document.getElementById('status').textContent.replace(/\(AI 思考中...\)/,'').trim(), false); // Remove thinking text
+           const st = document.getElementById('status');
+           st.childNodes[0].nodeValue = st.childNodes[0].nodeValue.replace(/\(AI 思考中...\)/,'').trim() + ' ';
+           st.classList.remove('thinking');
        }
-       // Ensure thinking flag is always reset if function exits
        aiThinking = false;
   }
 }
@@ -503,10 +453,7 @@ async function requestAiMove() {
 function setStatus(msg, thinking = false) {
   const st = document.getElementById('status');
   const thinkingIndicator = st.querySelector('.thinking-indicator');
-
-  // Set main message text, careful not to overwrite the span
-   st.childNodes[0].nodeValue = msg + ' '; // Add space before potential indicator
-
+  st.childNodes[0].nodeValue = msg + ' ';
   if (thinkingIndicator) {
        thinkingIndicator.style.display = thinking ? 'inline' : 'none';
   }
@@ -516,10 +463,7 @@ function setStatus(msg, thinking = false) {
 // --- Game Controls ---
 function resetGame() {
   board = Array.from({ length: N }, () => Array(N).fill(0));
-  gameOver = false;
-  playerTurn = true;
-  aiThinking = false;
-  lastAiMove = null; // Reset last move marker
+  gameOver = false; playerTurn = true; aiThinking = false; lastAiMove = null;
   drawBoard();
   setStatus('游戏已重置，您的回合');
 }
@@ -528,34 +472,33 @@ function applySettings() {
     const depthInput = document.getElementById('depthInput');
     const workersInput = document.getElementById('workersInput');
     const errorSpan = document.getElementById('validation-error');
-    errorSpan.textContent = ''; // Clear previous errors
+    errorSpan.textContent = '';
 
     let newDepth = parseInt(depthInput.value, 10);
     let newWorkers = parseInt(workersInput.value, 10);
     let isValid = true;
     let errorMsg = '';
 
-    // Validate Depth (Adjusted range for 20x20)
-    const maxDepth = 6;
+    // 深度上限改为 16
+    const maxDepth = 16;
     if (isNaN(newDepth) || newDepth < 1 || newDepth > maxDepth) {
         errorMsg += `深度必须在 1 到 ${maxDepth} 之间。`;
-        depthInput.value = currentDepth; // Reset to previous valid value
+        depthInput.value = currentDepth;
         isValid = false;
     }
 
-    // Validate Workers (Adjusted range)
-    const maxWorkers = 16; // More workers might not help much and increase overhead
+    // 工作单元上限改为 32
+    const maxWorkers = 32;
     if (isNaN(newWorkers) || newWorkers < 1 || newWorkers > maxWorkers) {
          errorMsg += (isValid ? '' : ' ') + `工作单元必须在 1 到 ${maxWorkers} 之间。`;
-         workersInput.value = currentThreads; // Reset to previous valid value
+         workersInput.value = currentThreads;
          isValid = false;
     }
 
     if (isValid) {
-        console.log(`应用新设置: 深度=${newDepth}, 工作单元=${newWorkers}`);
         currentDepth = newDepth;
         currentThreads = newWorkers;
-        resetGame(); // Reset game when settings change
+        resetGame();
         setStatus('设置已应用，开始新游戏');
     } else {
         errorSpan.textContent = errorMsg.trim();
@@ -564,11 +507,8 @@ function applySettings() {
 
 function aiFirst() {
   resetGame();
-  playerTurn = false;
-  aiThinking = true; // Set thinking flag
-  lastAiMove = null; // Ensure no marker at start
+  playerTurn = false; aiThinking = true; lastAiMove = null;
   setStatus('AI 先手，思考中...', true);
-  // Use requestAnimationFrame for smoother UI update
   requestAnimationFrame(() => {
        setTimeout(requestAiMove, 50);
    });
@@ -576,14 +516,13 @@ function aiFirst() {
 
 // --- Initial setup ---
 window.onload = () => {
-    // Set initial values in the input boxes
     document.getElementById('depthInput').value = currentDepth;
-    // Ensure worker input reflects detected or default value
     const workersInput = document.getElementById('workersInput');
     workersInput.value = currentThreads;
-    workersInput.max = Math.max(currentThreads, 16); // Adjust max based on detection if needed
+    // 将 max 限制也改为 32
+    workersInput.max = Math.max(currentThreads, 32);
 
-    drawBoard(); // Draw the initial empty board
+    drawBoard();
     setStatus('游戏开始，您的回合');
 };
 

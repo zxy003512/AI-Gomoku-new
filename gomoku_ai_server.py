@@ -280,7 +280,8 @@ class GomokuAI:
         self.q_depth   = max(1, self.max_depth//2)
         self.time_limit= 8.0
         cpu = os.cpu_count() or 1
-        self.workers  = max(1, min(max_workers or cpu, cpu, 8))
+        # 将上限由 8 调整为 32
+        self.workers  = max(1, min(max_workers or cpu, cpu, 32))
         self.TT       = {}
         self.killer   = [[(-1,-1),(-1,-1)] for _ in range(self.max_depth+2)]
         self.history  = {}
@@ -481,7 +482,8 @@ def ai_move():
         tw    = int(data.get('threads', os.cpu_count() or 1))
         if not board or len(board)!=BOARD_SIZE or any(len(r)!=BOARD_SIZE for r in board):
             return jsonify(error="无效棋盘"), 400
-        depth = max(1, min(depth, 8))
+        # 将深度上限由 8 调整为 16
+        depth = max(1, min(depth, 16))
         ai = GomokuAI(board, depth, tw)
         mv = ai.find_best_move()
         return jsonify(move=mv)
