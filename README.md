@@ -1,4 +1,3 @@
-
 ## 🚀 快速开始
 
 1.  **安装依赖**:
@@ -55,5 +54,5 @@
 2.  **打包**:
     在项目根目录下打开终端，运行：
     ```bash
- pyinstaller --onefile --name GomokuAI --add-data "index.html;." main.py
+    pyinstaller --onefile --name GomokuAI --add-data "index.html;." main.py
     ```
