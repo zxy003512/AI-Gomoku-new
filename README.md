@@ -56,3 +56,4 @@
     在项目根目录下打开终端，运行：
     ```bash
  pyinstaller --onefile --name GomokuAI --add-data "index.html;." main.py
+    ```
