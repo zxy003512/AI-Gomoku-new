@@ -278,7 +278,7 @@ class GomokuAI:
         self.board0 = np.array(board, dtype=np.int8)
         self.max_depth = max(1, max_depth)
         self.q_depth   = max(1, self.max_depth//2)
-        self.time_limit= 8.0
+        self.time_limit= 60.0
         cpu = os.cpu_count() or 1
         # 将上限由 8 调整为 32
         self.workers  = max(1, min(max_workers or cpu, cpu, 32))
